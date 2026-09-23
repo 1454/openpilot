@@ -8,6 +8,7 @@ import pytest
 
 from cereal import log
 from openpilot.common.constants import CV
+from openpilot.common.realtime import DT_MDL
 from opendbc.car.honda.interface import CarInterface
 from opendbc.car.honda.values import CAR
 from opendbc.car.gm.values import CAR as GM_CAR, GMFlags
@@ -3780,11 +3781,483 @@ def test_experimental_speed_handoff_uses_lead_limit_when_following():
 
 
 def test_experimental_speed_handoff_keeps_stronger_e2e_brake():
-  kept = LongitudinalPlanner.apply_experimental_speed_handoff(-0.50, 0.20, -0.50, 1.0)
-  blended = LongitudinalPlanner.apply_experimental_speed_handoff(0.02, 0.40, 0.02, 0.5)
+  shared_cap = LongitudinalPlanner.get_shared_positive_accel_cap(2.0)
+  kept = LongitudinalPlanner.apply_experimental_speed_handoff(-0.50, 0.20, -0.50, 1.0, shared_cap)
+  blended = LongitudinalPlanner.apply_experimental_speed_handoff(0.02, 0.40, 0.02, 0.5, shared_cap)
 
   assert kept == pytest.approx(-0.50)
   assert blended == pytest.approx(0.21)
+
+
+def test_shared_positive_accel_cap_matches_profile_max():
+  assert LongitudinalPlanner.get_shared_positive_accel_cap(2.5) == pytest.approx(2.5)
+  assert LongitudinalPlanner.get_shared_positive_accel_cap(1.2) == pytest.approx(1.2)
+
+
+def test_profile_positive_accel_not_clipped_to_accel_max(monkeypatch):
+  def fake_get_accel_from_plan(speeds, accels, action_t=0.2, vEgoStopping=0.05):
+    return 3.2, False
+
+  monkeypatch.setattr(longitudinal_planner_module, "get_accel_from_plan", fake_get_accel_from_plan)
+
+  v_ego = 8.0
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  toggles = make_toggles()
+  sm = make_sm(v_ego, desired_accel=3.2, min_accel=-2.0, experimental_mode=False)
+  sm["starpilotPlan"].maxAcceleration = 3.2
+  planner.update(sm, toggles)
+  assert planner.output_a_target == pytest.approx(3.2)
+
+
+def test_experimental_speed_handoff_weight_ramps_with_band_progress():
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP)
+  toggles = make_toggles()
+  limit = 55.0 * CV.MPH_TO_MS
+  band = longitudinal_planner_module.EXPERIMENTAL_SPEED_HANDOFF_BAND
+  toggles.conditional_limit = limit
+  band_start = limit - band
+
+  w_entry = planner.get_experimental_speed_handoff_weight(band_start, True, False, toggles, False)
+  w_mid = planner.get_experimental_speed_handoff_weight(band_start + 0.5 * band, True, False, toggles, False)
+  w_exit = planner.get_experimental_speed_handoff_weight(limit, True, False, toggles, False)
+
+  assert w_entry == pytest.approx(0.0)
+  assert w_mid > w_entry + 0.2
+  assert w_exit == pytest.approx(1.0)
+  assert w_mid < w_exit
+
+
+def test_cem_handoff_near_exit_speed_positive_accel_not_crawl():
+  shared_cap = LongitudinalPlanner.get_shared_positive_accel_cap(2.5)
+  mpc = 0.75
+  e2e = 0.01
+  speed_handoff = 0.55
+  cruise_target = 1.8
+  blended = LongitudinalPlanner.apply_experimental_speed_handoff(
+    min(mpc, e2e), mpc, e2e, speed_handoff, shared_cap,
+    positive_cruise_handoff_target=cruise_target,
+  )
+  reference = min(mpc, shared_cap)
+  assert blended >= longitudinal_planner_module.EXPERIMENTAL_HANDOFF_MIN_POSITIVE_BLEND * speed_handoff * reference
+
+
+def test_cem_handoff_lifts_soft_mpc_crawl_when_cruise_has_headroom():
+  shared_cap = LongitudinalPlanner.get_shared_positive_accel_cap(2.5)
+  mpc = 0.03
+  e2e = 0.01
+  blended = LongitudinalPlanner.apply_experimental_speed_handoff(
+    min(mpc, e2e), mpc, e2e, 1.0, shared_cap, positive_cruise_handoff_target=1.6,
+  )
+  assert blended >= 0.45 * shared_cap
+
+
+def test_cem_handoff_lifts_when_both_mpc_and_e2e_soft_with_cruise_headroom(monkeypatch):
+  shared_cap = LongitudinalPlanner.get_shared_positive_accel_cap(2.5)
+  mpc = 0.03
+  e2e = 0.08
+  blended = LongitudinalPlanner.apply_experimental_speed_handoff(
+    min(mpc, e2e), mpc, e2e, 1.0, shared_cap, positive_cruise_handoff_target=1.6,
+  )
+  assert blended >= 0.45 * shared_cap
+
+  negative_mpc = LongitudinalPlanner.apply_experimental_speed_handoff(
+    -0.05, -0.05, 0.08, 1.0, shared_cap, positive_cruise_handoff_target=1.6,
+  )
+  assert negative_mpc < 0.0
+  assert negative_mpc > -0.12
+
+  cem_accel, chill_frames, _ = _run_55mph_cem_chill_handoff(
+    monkeypatch, mpc_accel=0.03, chill_frames=3,
+  )
+  assert cem_accel >= 0.45 * shared_cap
+  step = longitudinal_planner_module.EXPERIMENTAL_RELEASE_ACCEL_STEP
+  for i, chill_accel in enumerate(chill_frames):
+    max_allowed = cem_accel + (i + 1) * step + 1e-3
+    assert chill_accel <= max_allowed
+
+
+def test_cem_handoff_does_not_lift_soft_negative_mpc_to_profile_max():
+  shared_cap = LongitudinalPlanner.get_shared_positive_accel_cap(2.5)
+  blended = LongitudinalPlanner.apply_experimental_speed_handoff(
+    -0.12, -0.05, -0.12, 1.0, shared_cap, positive_cruise_handoff_target=1.6,
+  )
+  assert blended == pytest.approx(-0.12)
+
+
+def test_cem_handoff_positive_accel_cleared_outside_handoff_band(monkeypatch):
+  def fake_get_accel_from_plan(speeds, accels, action_t=0.2, vEgoStopping=0.05):
+    return 0.75, False
+
+  monkeypatch.setattr(longitudinal_planner_module, "get_accel_from_plan", fake_get_accel_from_plan)
+
+  limit = 55.0 * CV.MPH_TO_MS
+  v_ego = limit - 0.05
+  v_cruise = 70.0 * CV.MPH_TO_MS
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  toggles = make_toggles()
+  toggles.conditional_limit = limit
+
+  sm_cem = make_sm(v_ego, desired_accel=0.01, min_accel=-2.0, experimental_mode=True)
+  sm_cem["starpilotPlan"].maxAcceleration = 2.5
+  sm_cem["starpilotPlan"].vCruise = v_cruise
+  planner.update(sm_cem, toggles)
+  assert planner.cem_handoff_positive_a_target is not None
+
+  v_outside = limit - longitudinal_planner_module.EXPERIMENTAL_SPEED_HANDOFF_BAND - 1.0
+  sm_cem_outside = make_sm(v_outside, desired_accel=0.01, min_accel=-2.0, experimental_mode=True)
+  sm_cem_outside["starpilotPlan"].maxAcceleration = 2.5
+  sm_cem_outside["starpilotPlan"].vCruise = v_cruise
+  planner.update(sm_cem_outside, toggles)
+  assert planner.cem_handoff_positive_a_target is None
+
+  sm_cem = make_sm(v_ego, desired_accel=0.01, min_accel=-2.0, experimental_mode=True)
+  sm_cem["starpilotPlan"].maxAcceleration = 2.5
+  sm_cem["starpilotPlan"].vCruise = v_cruise
+  planner.update(sm_cem, toggles)
+  assert planner.cem_handoff_positive_a_target is not None
+
+  sm_chill = make_sm(v_ego, desired_accel=0.01, min_accel=-2.0, experimental_mode=False)
+  sm_chill["starpilotPlan"].maxAcceleration = 2.5
+  sm_chill["starpilotPlan"].vCruise = v_cruise
+  planner.update(sm_chill, toggles)
+  assert planner.cem_handoff_positive_a_target is not None
+
+  sm_chill_outside = make_sm(v_outside, desired_accel=0.01, min_accel=-2.0, experimental_mode=False)
+  sm_chill_outside["starpilotPlan"].maxAcceleration = 2.5
+  sm_chill_outside["starpilotPlan"].vCruise = v_cruise
+  planner.update(sm_chill_outside, toggles)
+  assert planner.cem_handoff_positive_a_target is None
+
+
+def test_chill_exit_without_stored_cem_ref_does_not_force_release_step(monkeypatch):
+  def fake_get_accel_from_plan(speeds, accels, action_t=0.2, vEgoStopping=0.05):
+    return 0.75, False
+
+  monkeypatch.setattr(longitudinal_planner_module, "get_accel_from_plan", fake_get_accel_from_plan)
+
+  limit = 55.0 * CV.MPH_TO_MS
+  v_ego = limit - 0.05
+  v_cruise = 70.0 * CV.MPH_TO_MS
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  toggles = make_toggles()
+  toggles.conditional_limit = limit
+  planner.cem_handoff_positive_a_target = None
+  planner.prev_experimental_mode = True
+  planner.output_a_target = 0.75
+
+  sm_chill = make_sm(v_ego, desired_accel=0.01, min_accel=-2.0, experimental_mode=False)
+  sm_chill["starpilotPlan"].maxAcceleration = 2.5
+  sm_chill["starpilotPlan"].vCruise = v_cruise
+  planner.update(sm_chill, toggles)
+  assert planner.output_a_target > longitudinal_planner_module.EXPERIMENTAL_RELEASE_ACCEL_STEP + 0.1
+
+
+def _run_55mph_cem_chill_handoff(monkeypatch, *, mpc_accel=0.75, v_ego_offset=0.05, chill_frames=1):
+  clock = {"t": 1000.0}
+
+  def fake_monotonic():
+    clock["t"] += DT_MDL
+    return clock["t"]
+
+  def fake_get_accel_from_plan(speeds, accels, action_t=0.2, vEgoStopping=0.05):
+    return mpc_accel, False
+
+  monkeypatch.setattr(longitudinal_planner_module.time, "monotonic", fake_monotonic)
+  monkeypatch.setattr(longitudinal_planner_module, "get_accel_from_plan", fake_get_accel_from_plan)
+
+  limit = 55.0 * CV.MPH_TO_MS
+  v_ego = limit - v_ego_offset
+  v_cruise = 70.0 * CV.MPH_TO_MS
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  toggles = make_toggles()
+  toggles.conditional_limit = limit
+
+  sm_cem = make_sm(v_ego, desired_accel=0.01, min_accel=-2.0, experimental_mode=True)
+  sm_cem["starpilotPlan"].maxAcceleration = 2.5
+  sm_cem["starpilotPlan"].vCruise = v_cruise
+  planner.update(sm_cem, toggles)
+  cem_accel = planner.output_a_target
+
+  chill_accels = []
+  sm_chill = make_sm(v_ego, desired_accel=0.01, min_accel=-2.0, experimental_mode=False)
+  sm_chill["starpilotPlan"].maxAcceleration = 2.5
+  sm_chill["starpilotPlan"].vCruise = v_cruise
+  for _ in range(chill_frames):
+    planner.update(sm_chill, toggles)
+    chill_accels.append(planner.output_a_target)
+
+  chill_accel = chill_accels[0] if chill_accels else None
+  return cem_accel, chill_accel if chill_frames == 1 else chill_accels, LongitudinalPlanner.get_shared_positive_accel_cap(2.5)
+
+
+def _run_cem_chill_handoff_timed(
+  monkeypatch, *, mpc_accel=0.75, chill_plan_accel=None, chill_frames=20, desired_accel=0.01, v_ego=None,
+):
+  clock = {"t": 1000.0}
+  cem_phase = {"active": True}
+  chill_plan = mpc_accel if chill_plan_accel is None else chill_plan_accel
+
+  def fake_monotonic():
+    clock["t"] += DT_MDL
+    return clock["t"]
+
+  def fake_get_accel_from_plan(speeds, accels, action_t=0.2, vEgoStopping=0.05):
+    plan_accel = mpc_accel if cem_phase["active"] else chill_plan
+    return plan_accel, False
+
+  monkeypatch.setattr(longitudinal_planner_module.time, "monotonic", fake_monotonic)
+  monkeypatch.setattr(longitudinal_planner_module, "get_accel_from_plan", fake_get_accel_from_plan)
+
+  limit = 55.0 * CV.MPH_TO_MS
+  if v_ego is None:
+    v_ego = 50.0 * CV.MPH_TO_MS
+  v_cruise = 70.0 * CV.MPH_TO_MS
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  toggles = make_toggles()
+  toggles.conditional_limit = limit
+
+  sm_cem = make_sm(v_ego, desired_accel=desired_accel, min_accel=-2.0, experimental_mode=True)
+  sm_cem["starpilotPlan"].maxAcceleration = 2.5
+  sm_cem["starpilotPlan"].vCruise = v_cruise
+  planner.update(sm_cem, toggles)
+  cem_accel = planner.output_a_target
+  cem_phase["active"] = False
+
+  chill_accels = []
+  chill_a_desired = []
+  for _ in range(chill_frames):
+    sm_chill = make_sm(v_ego, desired_accel=desired_accel, min_accel=-2.0, experimental_mode=False)
+    sm_chill["starpilotPlan"].maxAcceleration = 2.5
+    sm_chill["starpilotPlan"].vCruise = v_cruise
+    planner.update(sm_chill, toggles)
+    chill_accels.append(planner.output_a_target)
+    chill_a_desired.append(planner.a_desired)
+
+  return cem_accel, chill_accels, chill_a_desired
+
+
+def test_cem_handoff_band_edge_time_ramp_raises_accel(monkeypatch):
+  clock = {"t": 1000.0}
+
+  def fake_monotonic():
+    clock["t"] += DT_MDL
+    return clock["t"]
+
+  def fake_get_accel_from_plan(speeds, accels, action_t=0.2, vEgoStopping=0.05):
+    return 0.75, False
+
+  monkeypatch.setattr(longitudinal_planner_module.time, "monotonic", fake_monotonic)
+  monkeypatch.setattr(longitudinal_planner_module, "get_accel_from_plan", fake_get_accel_from_plan)
+
+  limit = 55.0 * CV.MPH_TO_MS
+  band = longitudinal_planner_module.EXPERIMENTAL_SPEED_HANDOFF_BAND
+  v_ego = limit - band
+  v_cruise = 70.0 * CV.MPH_TO_MS
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  toggles = make_toggles()
+  toggles.conditional_limit = limit
+
+  sm = make_sm(v_ego, desired_accel=0.01, min_accel=-2.0, experimental_mode=True)
+  sm["starpilotPlan"].maxAcceleration = 2.5
+  sm["starpilotPlan"].vCruise = v_cruise
+  planner.update(sm, toggles)
+  first = planner.output_a_target
+
+  planner.update(sm, toggles)
+  second = planner.output_a_target
+  planner.update(sm, toggles)
+  third = planner.output_a_target
+
+  assert first < 0.09
+  assert second > first + 0.04
+  assert third >= 0.09
+
+
+def test_cem_handoff_closed_loop_crosses_first_half_mph_under_six_seconds(monkeypatch):
+  clock = {"t": 1000.0}
+
+  def fake_monotonic():
+    clock["t"] += DT_MDL
+    return clock["t"]
+
+  def fake_get_accel_from_plan(speeds, accels, action_t=0.2, vEgoStopping=0.05):
+    return 0.75, False
+
+  monkeypatch.setattr(longitudinal_planner_module.time, "monotonic", fake_monotonic)
+  monkeypatch.setattr(longitudinal_planner_module, "get_accel_from_plan", fake_get_accel_from_plan)
+
+  limit = 55.0 * CV.MPH_TO_MS
+  band = longitudinal_planner_module.EXPERIMENTAL_SPEED_HANDOFF_BAND
+  v_ego = limit - band
+  v_cruise = 70.0 * CV.MPH_TO_MS
+  half_mph = 0.5 * CV.MPH_TO_MS
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  toggles = make_toggles()
+  toggles.conditional_limit = limit
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+
+  max_frames = int(6.0 / DT_MDL) + 1
+  elapsed = None
+  for frame in range(max_frames):
+    sm = make_sm(v_ego, desired_accel=0.01, min_accel=-2.0, experimental_mode=True)
+    sm["starpilotPlan"].maxAcceleration = 2.5
+    sm["starpilotPlan"].vCruise = v_cruise
+    planner.update(sm, toggles)
+    v_ego += max(0.0, planner.output_a_target) * DT_MDL
+    if v_ego >= limit - band + half_mph:
+      elapsed = frame * DT_MDL
+      break
+
+  assert elapsed is not None
+  assert elapsed < 6.0
+
+
+def test_cem_chill_high_accel_ratchet_binds_past_release_window(monkeypatch):
+  limit = 55.0 * CV.MPH_TO_MS
+  _, chill_accels, chill_a_desired = _run_cem_chill_handoff_timed(
+    monkeypatch,
+    mpc_accel=2.50,
+    chill_plan_accel=0.03,
+    chill_frames=25,
+    desired_accel=0.03,
+    v_ego=limit - 0.05,
+  )
+  step = longitudinal_planner_module.EXPERIMENTAL_RELEASE_ACCEL_STEP
+  assert chill_accels[0] > 2.0
+  for i in range(1, 4):
+    assert chill_accels[i - 1] - chill_accels[i] <= step + 1e-3
+    assert chill_a_desired[i] >= chill_accels[i] - 1e-3
+
+  window_end = int(longitudinal_planner_module.EXPERIMENTAL_RELEASE_ACCEL_HOLD_TIME / DT_MDL)
+  assert window_end + 1 < len(chill_accels)
+  assert chill_accels[window_end] - chill_accels[window_end + 1] <= step + 1e-3
+  assert chill_accels[window_end + 1] > 0.03 + 0.5
+
+
+def test_cem_handoff_ratchet_seeded_after_braking_in_band(monkeypatch):
+  mpc_values = iter([1.59, -0.40, -0.40])
+
+  def fake_get_accel_from_plan(speeds, accels, action_t=0.2, vEgoStopping=0.05):
+    return next(mpc_values), False
+
+  monkeypatch.setattr(longitudinal_planner_module, "get_accel_from_plan", fake_get_accel_from_plan)
+
+  limit = 55.0 * CV.MPH_TO_MS
+  v_ego = limit - 0.05
+  v_cruise = 70.0 * CV.MPH_TO_MS
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  toggles = make_toggles()
+  toggles.conditional_limit = limit
+
+  for _ in range(2):
+    sm_cem = make_sm(v_ego, desired_accel=0.01, min_accel=-2.0, experimental_mode=True)
+    sm_cem["starpilotPlan"].maxAcceleration = 2.5
+    sm_cem["starpilotPlan"].vCruise = v_cruise
+    planner.update(sm_cem, toggles)
+
+  assert planner.cem_handoff_positive_a_target == pytest.approx(0.0)
+
+  sm_chill = make_sm(v_ego, desired_accel=0.01, min_accel=-2.0, experimental_mode=False)
+  sm_chill["starpilotPlan"].maxAcceleration = 2.5
+  sm_chill["starpilotPlan"].vCruise = v_cruise
+  planner.update(sm_chill, toggles)
+  assert planner.output_a_target < 0.15
+
+
+def _measure_handoff_band_entry_accel(monkeypatch):
+  accels = []
+
+  def fake_get_accel_from_plan(speeds, accels_arr, action_t=0.2, vEgoStopping=0.05):
+    return 0.75, False
+
+  monkeypatch.setattr(longitudinal_planner_module, "get_accel_from_plan", fake_get_accel_from_plan)
+
+  limit = 55.0 * CV.MPH_TO_MS
+  band = longitudinal_planner_module.EXPERIMENTAL_SPEED_HANDOFF_BAND
+  v_cruise = 70.0 * CV.MPH_TO_MS
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  toggles = make_toggles()
+  toggles.conditional_limit = limit
+
+  for v_ego in (limit - band, limit - band + 0.05, limit - 0.05):
+    planner = LongitudinalPlanner(CP, init_v=v_ego)
+    sm = make_sm(v_ego, desired_accel=0.01, min_accel=-2.0, experimental_mode=True)
+    sm["starpilotPlan"].maxAcceleration = 2.5
+    sm["starpilotPlan"].vCruise = v_cruise
+    planner.update(sm, toggles)
+    accels.append(planner.output_a_target)
+  return accels
+
+
+def test_cem_55mph_handoff_band_keeps_cem_positive_accel(monkeypatch):
+  mpc_accel = 0.75
+  cem_accel, _, shared_cap = _run_55mph_cem_chill_handoff(monkeypatch, mpc_accel=mpc_accel)
+  reference = min(mpc_accel, shared_cap)
+  assert cem_accel >= 0.45 * reference
+
+
+def test_cem_55mph_chill_exit_does_not_jump_positive_accel(monkeypatch):
+  cem_accel, chill_accels, _ = _run_55mph_cem_chill_handoff(monkeypatch, chill_frames=3)
+  assert cem_accel > 0.05
+  step = longitudinal_planner_module.EXPERIMENTAL_RELEASE_ACCEL_STEP
+  prev = cem_accel
+  for chill_accel in chill_accels:
+    assert prev - chill_accel <= step + 1e-3
+    assert chill_accel - prev <= step + 1e-3
+    prev = chill_accel
+
+
+def test_cem_handoff_band_entry_does_not_step_throttle(monkeypatch):
+  entry, frame2, at_limit = _measure_handoff_band_entry_accel(monkeypatch)
+  assert entry < 0.15
+  assert frame2 - entry <= 0.15
+  assert at_limit > frame2
+
+
+def test_cem_55mph_soft_mpc_crawl_keeps_cem_positive_accel(monkeypatch):
+  cem_accel, _, shared_cap = _run_55mph_cem_chill_handoff(monkeypatch, mpc_accel=0.03)
+  assert cem_accel >= 0.45 * shared_cap
+
+
+def test_cem_handoff_accel_no_hole_at_50_55_60_mph(monkeypatch):
+  def fake_get_accel_from_plan(speeds, accels_arr, action_t=0.2, vEgoStopping=0.05):
+    return 0.03, False
+
+  monkeypatch.setattr(longitudinal_planner_module, "get_accel_from_plan", fake_get_accel_from_plan)
+
+  limit = 55.0 * CV.MPH_TO_MS
+  v_cruise = 70.0 * CV.MPH_TO_MS
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  toggles = make_toggles()
+  toggles.conditional_limit = limit
+  accels = {}
+  for mph in (50, 55, 60):
+    v_ego = mph * CV.MPH_TO_MS
+    planner = LongitudinalPlanner(CP, init_v=v_ego)
+    sm = make_sm(v_ego, desired_accel=0.01, min_accel=-2.0, experimental_mode=True)
+    sm["starpilotPlan"].maxAcceleration = 2.5
+    sm["starpilotPlan"].vCruise = v_cruise
+    planner.update(sm, toggles)
+    accels[mph] = planner.output_a_target
+
+  shared_cap = LongitudinalPlanner.get_shared_positive_accel_cap(2.5)
+  assert accels[55] >= accels[50] - 0.02
+  assert accels[55] >= 0.45 * shared_cap
+  assert accels[60] <= accels[55] + longitudinal_planner_module.EXPERIMENTAL_RELEASE_ACCEL_STEP + 0.02
+
+
+def test_experimental_mode_exit_does_not_jump_positive_accel(monkeypatch):
+  cem_accel, chill_accel, _ = _run_55mph_cem_chill_handoff(monkeypatch, v_ego_offset=0.25 * longitudinal_planner_module.EXPERIMENTAL_SPEED_HANDOFF_BAND)
+  assert cem_accel > 0.05
+  assert chill_accel - cem_accel <= longitudinal_planner_module.EXPERIMENTAL_RELEASE_ACCEL_STEP + 1e-3
 
 
 def test_experimental_speed_handoff_following_lead_matches_cem_window():

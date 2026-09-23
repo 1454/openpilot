@@ -63,6 +63,7 @@ class DesireHelper:
     self.lane_change_direction = LaneChangeDirection.none
     self.lane_change_timer = 0.0
     self.lane_change_ll_prob = 1.0
+    self.lane_change_prob_seen = False
     self.keep_pulse_timer = 0.0
     self.prev_one_blinker = False
     self.desire = log.Desire.none
@@ -306,9 +307,17 @@ class DesireHelper:
     lane_changes_allowed &= not getattr(starpilot_toggles, "lane_changes_require_cruise", False) or bool(getattr(cruise_state, "enabled", False))
 
     lane_change_time_max = getattr(starpilot_toggles, 'lane_change_time_max', LANE_CHANGE_TIME_MAX)
-    if not lateral_active or self.lane_change_timer > lane_change_time_max or not lane_changes_allowed:
+    timed_out = self.lane_change_timer > lane_change_time_max
+    if not lateral_active or not lane_changes_allowed or (timed_out and not one_blinker):
       self.lane_change_state = LaneChangeState.off
       self.lane_change_direction = LaneChangeDirection.none
+      self.lane_change_prob_seen = False
+    elif timed_out:
+      self.lane_change_state = LaneChangeState.preLaneChange
+      self.lane_change_direction = self.get_lane_change_direction(carstate)
+      self.lane_change_ll_prob = 1.0
+      self.lane_change_prob_seen = False
+      self.lane_change_wait_timer = 0.0
     else:
       if nav_turn_signal and self.lane_change_state == LaneChangeState.preLaneChange:
         self.lane_change_state = LaneChangeState.off
@@ -348,6 +357,7 @@ class DesireHelper:
           self.lane_change_direction = LaneChangeDirection.none
         elif torque_applied and not blindspot_detected:
           self.lane_change_state = LaneChangeState.laneChangeStarting
+          self.lane_change_prob_seen = False
 
           self.lane_change_completed = starpilot_toggles.one_lane_change
 
@@ -359,9 +369,11 @@ class DesireHelper:
       elif self.lane_change_state == LaneChangeState.laneChangeStarting:
         # fade out over .5s
         self.lane_change_ll_prob = max(self.lane_change_ll_prob - 2 * DT_MDL, 0.0)
+        if lane_change_prob > 0.2:
+          self.lane_change_prob_seen = True
 
-        # 98% certainty
-        if lane_change_prob < 0.02 and self.lane_change_ll_prob < 0.01:
+        # Completion is a drop after the model has committed, not a low prob at the start.
+        if self.lane_change_prob_seen and lane_change_prob < 0.02 and self.lane_change_ll_prob < 0.01:
           self.lane_change_state = LaneChangeState.laneChangeFinishing
 
       # LaneChangeState.laneChangeFinishing
