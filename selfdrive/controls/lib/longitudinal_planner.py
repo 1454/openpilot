@@ -293,6 +293,10 @@ EXPERIMENTAL_RELEASE_ACCEL_MIN_DELTA_A = 0.12
 EXPERIMENTAL_RELEASE_ACCEL_STEP = 0.06
 EXPERIMENTAL_SPEED_HANDOFF_BAND = 5.0 * CV.MPH_TO_MS
 EXPERIMENTAL_HANDOFF_KEEP_E2E_BRAKE = -0.15
+EXPERIMENTAL_HANDOFF_E2E_SOFT_MAX = 0.15
+EXPERIMENTAL_HANDOFF_CRUISE_HEADROOM_MIN = 1.0
+EXPERIMENTAL_HANDOFF_MIN_POSITIVE_BLEND = 0.45
+EXPERIMENTAL_HANDOFF_BAND_RAMP_STEP = EXPERIMENTAL_RELEASE_ACCEL_STEP
 MATCHED_FOLLOW_TRANSITION_MIN_SPEED = 20.0
 TRACKED_VISION_MODEL_FLOOR_MIN_SPEED = 10.0
 TRACKED_VISION_MODEL_FLOOR_MIN_MODEL_PROB = 0.95
@@ -656,6 +660,11 @@ class LongitudinalPlanner:
     self.duplicate_vision_comfort_lead_source = None
     self.prev_experimental_mode = None
     self.experimental_release_accel_until = 0.0
+    self.cem_handoff_positive_a_target = None
+    self.cem_handoff_chill_exit_ratchet = None
+    self.cem_handoff_band_ramp_floor = None
+    self._current_speed_handoff = 0.0
+    self._in_cem_geographic_handoff_band = False
 
     if self.is_preap:
       try:
@@ -1802,6 +1811,7 @@ class LongitudinalPlanner:
       self.experimental_release_accel_until = now_t + hold_time
     elif experimental_mode:
       self.experimental_release_accel_until = 0.0
+      self.cem_handoff_chill_exit_ratchet = None
     self.prev_experimental_mode = bool(experimental_mode)
 
   def get_experimental_speed_handoff_weight(self, v_ego, experimental_mode, following_lead,
@@ -1825,12 +1835,122 @@ class LongitudinalPlanner:
     return bool(tracking_lead and float(d_rel) < (float(t_follow) * 2.0) * float(v_ego))
 
   @staticmethod
-  def apply_experimental_speed_handoff(output_a_target, output_a_target_mpc, output_a_target_e2e, speed_handoff):
+  def get_shared_positive_accel_cap(profile_max_accel):
+    return float(profile_max_accel)
+
+  @staticmethod
+  def apply_experimental_speed_handoff(
+    output_a_target, output_a_target_mpc, output_a_target_e2e, speed_handoff, shared_positive_cap,
+    positive_cruise_handoff_target=None, following_lead=False,
+  ):
     if speed_handoff <= 0.0:
-      return output_a_target
+      return float(output_a_target)
     if output_a_target_e2e < min(output_a_target_mpc, EXPERIMENTAL_HANDOFF_KEEP_E2E_BRAKE):
-      return output_a_target
-    return (1.0 - speed_handoff) * output_a_target + speed_handoff * output_a_target_mpc
+      return float(output_a_target)
+
+    w = float(speed_handoff)
+    cap = float(shared_positive_cap)
+    mpc = float(output_a_target_mpc)
+    e2e = float(output_a_target_e2e)
+    if mpc < 0.0:
+      handoff_target = float(output_a_target)
+    else:
+      handoff_target = min(mpc, cap)
+    soft_e2e_cruise = (
+      mpc > e2e >= 0.0 and
+      e2e < min(mpc, EXPERIMENTAL_HANDOFF_E2E_SOFT_MAX)
+    )
+    soft_mpc_cruise = (
+      mpc <= e2e and
+      mpc >= 0.0 and
+      mpc < EXPERIMENTAL_HANDOFF_E2E_SOFT_MAX
+    )
+    soft_handoff_crawl = (soft_e2e_cruise or soft_mpc_cruise) and not following_lead
+    if (
+      mpc >= 0.0 and
+      soft_handoff_crawl and
+      positive_cruise_handoff_target is not None and
+      handoff_target < EXPERIMENTAL_HANDOFF_E2E_SOFT_MAX
+    ):
+      handoff_target = max(
+        handoff_target,
+        min(float(positive_cruise_handoff_target), cap),
+      )
+
+    blend_base = e2e if soft_e2e_cruise and e2e >= 0.0 else float(output_a_target)
+    blended = (1.0 - w) * blend_base + w * handoff_target
+    if handoff_target > 0.0:
+      blended = max(blended, EXPERIMENTAL_HANDOFF_MIN_POSITIVE_BLEND * w * handoff_target)
+      blended = min(blended, cap)
+    return blended
+
+  def apply_cem_handoff_band_positive_ramp(
+    self,
+    output_a_target,
+    *,
+    experimental_mode,
+    in_cem_geographic_handoff_band,
+    following_lead,
+    cruise_headroom,
+    mpc_accel,
+    shared_positive_cap,
+    positive_cruise_handoff_target,
+  ):
+    if (
+      not experimental_mode or
+      not in_cem_geographic_handoff_band or
+      following_lead or
+      cruise_headroom < EXPERIMENTAL_HANDOFF_CRUISE_HEADROOM_MIN
+    ):
+      self.cem_handoff_band_ramp_floor = None
+      return float(output_a_target)
+
+    mpc = float(mpc_accel)
+    if mpc < 0.0:
+      self.cem_handoff_band_ramp_floor = None
+      return float(output_a_target)
+
+    cap = float(shared_positive_cap)
+    ramp_target = min(mpc, cap)
+    if positive_cruise_handoff_target is not None:
+      ramp_target = max(ramp_target, min(float(positive_cruise_handoff_target), cap))
+
+    floor = self.cem_handoff_band_ramp_floor
+    if floor is None:
+      floor = max(0.0, float(output_a_target))
+    else:
+      floor = min(ramp_target, floor + EXPERIMENTAL_HANDOFF_BAND_RAMP_STEP)
+    self.cem_handoff_band_ramp_floor = floor
+    return max(float(output_a_target), floor)
+
+  def apply_chill_cem_handoff_ratchet(self, output_a_target, a_desired):
+    ratchet = self.cem_handoff_chill_exit_ratchet
+    if ratchet is None:
+      return float(output_a_target), float(a_desired)
+
+    ratchet = float(ratchet)
+    chill = float(output_a_target)
+    step = EXPERIMENTAL_RELEASE_ACCEL_STEP
+
+    if chill < 0.0 or ratchet <= 0.0:
+      self.cem_handoff_chill_exit_ratchet = None
+      return chill, float(a_desired)
+
+    if chill > ratchet + step:
+      out = ratchet + step
+    elif chill < ratchet - step:
+      out = max(chill, ratchet - step)
+    else:
+      out = chill
+      self.cem_handoff_chill_exit_ratchet = None
+      return out, float(a_desired)
+
+    self.cem_handoff_chill_exit_ratchet = out
+    if out > chill:
+      a_desired = max(float(a_desired), out)
+    elif out < chill:
+      a_desired = min(float(a_desired), out)
+    return out, a_desired
 
   def get_experimental_release_accel_target(self, lead, v_ego, base_t_follow,
                                             prev_output_a_target, output_a_target,
@@ -2024,6 +2144,10 @@ class LongitudinalPlanner:
 
     self.generation = getattr(starpilot_toggles, "model_version", None)
     experimental_mode = bool(sm['selfdriveState'].experimentalMode)
+    experimental_mode_fell_this_frame = self.prev_experimental_mode is True and not experimental_mode
+    shared_positive_accel_cap = self.get_shared_positive_accel_cap(sm['starpilotPlan'].maxAcceleration)
+    self._current_speed_handoff = 0.0
+    self._in_cem_geographic_handoff_band = False
     self.mode = 'blended' if experimental_mode else 'acc'
     self.mpc.mode = 'acc'
     if not self.mlsim:
@@ -2477,8 +2601,41 @@ class LongitudinalPlanner:
             getattr(sm['starpilotPlan'], 'redLight', False)
           ),
         )
+        self._current_speed_handoff = speed_handoff
+        cem_limit = float(getattr(starpilot_toggles, "conditional_limit", 0.0) or 0.0)
+        cem_band_start = cem_limit - EXPERIMENTAL_SPEED_HANDOFF_BAND
+        in_cem_geographic_handoff_band = (
+          cem_limit > 1.0 and
+          scene_v_ego >= cem_band_start and
+          not cem_following_lead
+        )
+        self._in_cem_geographic_handoff_band = in_cem_geographic_handoff_band
+        cruise_headroom = max(0.0, float(v_cruise) - scene_v_ego)
+        positive_cruise_handoff_target = None
+        if in_cem_geographic_handoff_band:
+          if cruise_headroom >= EXPERIMENTAL_HANDOFF_CRUISE_HEADROOM_MIN:
+            positive_cruise_handoff_target = min(
+              cruise_headroom / max(action_t, self.dt),
+              shared_positive_accel_cap,
+            )
         output_a_target = self.apply_experimental_speed_handoff(
-          output_a_target, output_a_target_mpc, output_a_target_e2e, speed_handoff,
+          output_a_target,
+          output_a_target_mpc,
+          output_a_target_e2e,
+          speed_handoff,
+          shared_positive_accel_cap,
+          positive_cruise_handoff_target=positive_cruise_handoff_target,
+          following_lead=cem_following_lead,
+        )
+        output_a_target = self.apply_cem_handoff_band_positive_ramp(
+          output_a_target,
+          experimental_mode=experimental_mode,
+          in_cem_geographic_handoff_band=in_cem_geographic_handoff_band,
+          following_lead=cem_following_lead,
+          cruise_headroom=cruise_headroom,
+          mpc_accel=output_a_target_mpc,
+          shared_positive_cap=shared_positive_accel_cap,
+          positive_cruise_handoff_target=positive_cruise_handoff_target,
         )
     else:
       output_a_target, output_should_stop = get_accel_from_plan(
@@ -2986,7 +3143,8 @@ class LongitudinalPlanner:
         self.a_desired = max(self.a_desired, tracked_vision_model_brake_cap)
         output_a_target = max(output_a_target, tracked_vision_model_brake_cap)
 
-    output_accel_max = no_throttle_output_max if not self.allow_throttle else accel_limits_turns[1]
+    positive_accel_max = float(accel_limits_turns[1])
+    output_accel_max = no_throttle_output_max if not self.allow_throttle else positive_accel_max
     output_a_target = float(np.clip(output_a_target, output_accel_min, output_accel_max))
 
     if close_stop_hold_cap is not None:
@@ -3181,6 +3339,30 @@ class LongitudinalPlanner:
     if accord_stop_go_target < output_a_target:
       self.a_desired = min(self.a_desired, accord_stop_go_target)
       output_a_target = accord_stop_go_target
+
+    if experimental_mode and self._in_cem_geographic_handoff_band:
+      self.cem_handoff_positive_a_target = max(0.0, float(output_a_target))
+
+    if experimental_mode_fell_this_frame and self.cem_handoff_positive_a_target is not None:
+      self.cem_handoff_chill_exit_ratchet = float(self.cem_handoff_positive_a_target)
+
+    in_cem_handoff_band = experimental_mode and self._in_cem_geographic_handoff_band
+    if not in_cem_handoff_band and not experimental_mode_fell_this_frame:
+      self.cem_handoff_positive_a_target = None
+    if scene_v_ego < EXPERIMENTAL_RELEASE_ACCEL_MIN_SPEED:
+      self.cem_handoff_positive_a_target = None
+      self.cem_handoff_chill_exit_ratchet = None
+      self.cem_handoff_band_ramp_floor = None
+
+    if (
+      not experimental_mode and
+      self.cem_handoff_chill_exit_ratchet is not None and
+      scene_v_ego >= EXPERIMENTAL_RELEASE_ACCEL_MIN_SPEED
+    ):
+      output_a_target, self.a_desired = self.apply_chill_cem_handoff_ratchet(
+        output_a_target,
+        self.a_desired,
+      )
 
     self.output_a_target = output_a_target
     self.output_should_stop = bool(output_should_stop or vision_low_speed_stop_active)

@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from cereal import custom, log
 from cereal import messaging
 from cereal.messaging import SubMaster, PubMaster
@@ -12,11 +14,54 @@ from openpilot.selfdrive.ui.soundd import (
 )
 
 import numpy as np
+import pytest
 import time
 import wave
 
 AudibleAlert = log.SelfdriveState.AudibleAlert
 StarPilotAudibleAlert = custom.StarPilotCarControl.HUDControl.AudibleAlert
+
+
+class _SounddAttributeSpy:
+  def __init__(self, soundd):
+    self.soundd = soundd
+    self.alert_assignments: list[tuple[object, float]] = []
+    self.volume_writes: list[tuple[float, object]] = []
+    self._cls = type(soundd)
+    self._orig_setattr = self._cls.__setattr__
+
+  def __enter__(self):
+    spy = self
+
+    def setattr_hook(obj, name, value):
+      if obj is spy.soundd:
+        if name == "current_alert":
+          spy.alert_assignments.append((value, obj.current_volume))
+        elif name == "current_volume":
+          alert = obj.__dict__.get("current_alert", AudibleAlert.none)
+          spy.volume_writes.append((value, alert))
+      return spy._orig_setattr(obj, name, value)
+
+    self._cls.__setattr__ = setattr_hook
+    return self
+
+  def __exit__(self, *_exc):
+    self._cls.__setattr__ = self._orig_setattr
+
+
+def assert_nonzero_volume_when_alert_assigned(assignments, *, expected_volume=None):
+  non_none = [(alert, volume) for alert, volume in assignments if alert != AudibleAlert.none]
+  assert non_none, "expected at least one non-none alert assignment"
+  for _alert, volume in non_none:
+    assert volume != 0.0
+    if expected_volume is not None:
+      assert volume == pytest.approx(expected_volume)
+
+
+def assert_no_zero_volume_while_alert_active(volume_writes):
+  bad = [(volume, alert) for volume, alert in volume_writes
+         if volume == 0.0 and alert != AudibleAlert.none]
+  assert not bad, f"current_volume must not be 0 while an alert is active: {bad}"
 
 
 class TestSoundd:
@@ -144,7 +189,7 @@ class TestSoundd:
     assert soundd.select_critical_alert(AudibleAlert.warningImmediate, True) == goat_alert
     assert soundd.select_critical_alert(AudibleAlert.warningImmediate, False) == AudibleAlert.warningImmediate
 
-  def test_bluetooth_audio_mutes_local_only_while_healthy(self):
+  def test_bluetooth_submit_success_still_outputs_local_pcm(self):
     soundd = Soundd.__new__(Soundd)
     samples = np.array([0.25, -0.5], dtype=np.float32)
     soundd.get_sound_data = lambda _frames: samples
@@ -153,11 +198,327 @@ class TestSoundd:
 
     soundd.bluetooth_audio = type("Sink", (), {"submit": lambda self, _samples: True})()
     soundd.callback(data_out, 2, None, None)
-    np.testing.assert_array_equal(data_out[:, 0], np.zeros(2, dtype=np.float32))
+    np.testing.assert_array_equal(data_out[:, 0], samples)
 
     soundd.bluetooth_audio = type("Sink", (), {"submit": lambda self, _samples: False})()
     soundd.callback(data_out, 2, None, None)
     np.testing.assert_array_equal(data_out[:, 0], samples)
+
+  def test_alert_volume_controller_first_alert_frame_is_audible(self):
+    soundd = Soundd.__new__(Soundd)
+    soundd.params_memory = type("Params", (), {"get": lambda self, _key: None, "remove": lambda self, _key: None})()
+    soundd.error_log = type("Path", (), {"is_file": lambda self: False})()
+    soundd.openpilot_crashed_played = False
+    soundd.selfdrive_timeout_alert = False
+    soundd.starpilot_toggles = SimpleNamespace(
+      alert_volume_controller=True,
+      goat_scream_critical_alerts=False,
+      turn_steering_limit_mute_speed=0.0,
+      engage_volume=80,
+      disengage_volume=80,
+      refuse_volume=80,
+      prompt_volume=80,
+      promptDistracted_volume=80,
+      warningSoft_volume=80,
+      warningImmediate_volume=80,
+      below_steer_speed_volume=80,
+    )
+    soundd.volume_map = {AudibleAlert.engage: 0.8}
+    soundd.current_alert = AudibleAlert.none
+    soundd.current_alert_type = ""
+    soundd.current_volume = 0.0
+    soundd.auto_volume = 0.2
+    soundd.loaded_sounds = {AudibleAlert.engage: np.ones(4800, dtype=np.float32)}
+    soundd.current_sound_frame = 0
+    soundd.model_ready_pending = False
+    soundd.model_ready_last_check = 0.0
+    soundd.model_ready_params = SimpleNamespace(
+      get_bool=lambda _key: False,
+    )
+    soundd.model_ready_chime = type("Chime", (), {"update": lambda *args, **kwargs: False, "consume": lambda self: None})()
+
+    sm = {
+      "selfdriveState": SimpleNamespace(
+        alertSound=SimpleNamespace(raw=AudibleAlert.engage),
+        alertType="engage",
+        alertStatus=log.SelfdriveState.AlertStatus.normal,
+        alertSize=log.SelfdriveState.AlertSize.none,
+      ),
+      "starpilotSelfdriveState": SimpleNamespace(
+        vEgo=20.0,
+        alertSound=SimpleNamespace(raw=StarPilotAudibleAlert.none),
+        alertType="",
+      ),
+    }
+    sm = type("SounddSM", (dict,), {
+      "updated": {"selfdriveState": True, "starpilotSelfdriveState": False, "soundPressure": False},
+      "valid": {"selfdriveState": True, "starpilotSelfdriveState": True},
+      "alive": {"selfdriveState": True},
+    })(sm)
+
+    with _SounddAttributeSpy(soundd) as spy:
+      soundd.update_audible_frame(sm)
+
+    assert soundd.current_alert == AudibleAlert.engage
+    assert soundd.current_volume == pytest.approx(0.8)
+    assert_nonzero_volume_when_alert_assigned(spy.alert_assignments, expected_volume=0.8)
+
+  def test_error_log_alert_sets_volume_when_prompt_plays(self):
+    soundd = Soundd.__new__(Soundd)
+    soundd.params_memory = type("Params", (), {"get": lambda self, _key: None, "remove": lambda self, _key: None})()
+    soundd.error_log = type("Path", (), {"is_file": lambda self: True})()
+    soundd.openpilot_crashed_played = False
+    soundd.selfdrive_timeout_alert = False
+    soundd.starpilot_toggles = SimpleNamespace(
+      alert_volume_controller=True,
+      goat_scream_critical_alerts=False,
+      turn_steering_limit_mute_speed=0.0,
+      prompt_volume=80,
+    )
+    soundd.volume_map = {AudibleAlert.prompt: 0.8}
+    soundd.current_alert = AudibleAlert.none
+    soundd.current_alert_type = ""
+    soundd.current_volume = 0.0
+    soundd.auto_volume = 0.2
+    soundd.loaded_sounds = {AudibleAlert.prompt: np.ones(4800, dtype=np.float32)}
+    soundd.current_sound_frame = 0
+
+    sm = {
+      "starpilotSelfdriveState": SimpleNamespace(vEgo=20.0),
+    }
+    sm = type("SounddSM", (dict,), {
+      "updated": {"selfdriveState": False, "starpilotSelfdriveState": False, "soundPressure": False},
+      "valid": {"selfdriveState": True, "starpilotSelfdriveState": True},
+      "alive": {"selfdriveState": True},
+    })(sm)
+
+    with _SounddAttributeSpy(soundd) as spy:
+      soundd.get_audible_alert(sm)
+
+    assert soundd.current_alert == AudibleAlert.prompt
+    assert soundd.current_volume == pytest.approx(0.8)
+    assert soundd.openpilot_crashed_played is True
+    assert_nonzero_volume_when_alert_assigned(spy.alert_assignments, expected_volume=0.8)
+
+  def test_alert_volume_controller_survives_same_frame_sound_pressure_update(self):
+    soundd = Soundd.__new__(Soundd)
+    soundd.params_memory = type("Params", (), {"get": lambda self, _key: None, "remove": lambda self, _key: None})()
+    soundd.error_log = type("Path", (), {"is_file": lambda self: False})()
+    soundd.openpilot_crashed_played = False
+    soundd.selfdrive_timeout_alert = False
+    soundd.starpilot_toggles = SimpleNamespace(
+      alert_volume_controller=True,
+      goat_scream_critical_alerts=False,
+      turn_steering_limit_mute_speed=0.0,
+      engage_volume=80,
+      disengage_volume=80,
+      refuse_volume=80,
+      prompt_volume=80,
+      promptDistracted_volume=80,
+      warningSoft_volume=80,
+      warningImmediate_volume=80,
+      below_steer_speed_volume=80,
+    )
+    soundd.volume_map = {AudibleAlert.engage: 0.8}
+    soundd.current_alert = AudibleAlert.none
+    soundd.current_alert_type = ""
+    soundd.current_volume = 0.0
+    soundd.auto_volume = 0.2
+    soundd.loaded_sounds = {AudibleAlert.engage: np.ones(4800, dtype=np.float32)}
+    soundd.current_sound_frame = 0
+    soundd.model_ready_pending = False
+    soundd.model_ready_last_check = 0.0
+    soundd.model_ready_params = SimpleNamespace(get_bool=lambda _key: False)
+    soundd.model_ready_chime = type("Chime", (), {"update": lambda *args, **kwargs: False, "consume": lambda self: None})()
+    soundd.spl_filter_weighted = type("Filter", (), {"update": lambda self, _value: None, "x": 40.0})()
+
+    sm = {
+      "selfdriveState": SimpleNamespace(
+        alertSound=SimpleNamespace(raw=AudibleAlert.engage),
+        alertType="engage",
+        alertStatus=log.SelfdriveState.AlertStatus.normal,
+        alertSize=log.SelfdriveState.AlertSize.none,
+      ),
+      "starpilotSelfdriveState": SimpleNamespace(
+        vEgo=20.0,
+        alertSound=SimpleNamespace(raw=StarPilotAudibleAlert.none),
+        alertType="",
+      ),
+      "soundPressure": SimpleNamespace(soundPressureWeightedDb=40.0),
+    }
+    sm = type("SounddSM", (dict,), {
+      "updated": {"selfdriveState": True, "starpilotSelfdriveState": False, "soundPressure": True},
+      "valid": {"selfdriveState": True, "starpilotSelfdriveState": True},
+      "alive": {"selfdriveState": True},
+    })(sm)
+
+    with _SounddAttributeSpy(soundd) as spy:
+      soundd.update_audible_frame(sm)
+
+    assert soundd.current_alert == AudibleAlert.engage
+    assert soundd.current_volume == pytest.approx(0.8)
+    assert_nonzero_volume_when_alert_assigned(spy.alert_assignments, expected_volume=0.8)
+    assert_no_zero_volume_while_alert_active(spy.volume_writes)
+
+  def test_stock_alert_wins_when_both_sources_have_sound(self):
+    soundd = Soundd.__new__(Soundd)
+    soundd.params_memory = type("Params", (), {"get": lambda self, _key: None, "remove": lambda self, _key: None})()
+    soundd.error_log = type("Path", (), {"is_file": lambda self: False})()
+    soundd.openpilot_crashed_played = False
+    soundd.selfdrive_timeout_alert = False
+    soundd.starpilot_toggles = SimpleNamespace(
+      alert_volume_controller=False,
+      goat_scream_critical_alerts=False,
+      turn_steering_limit_mute_speed=0.0,
+    )
+    soundd.volume_map = {}
+    soundd.current_alert = AudibleAlert.none
+    soundd.current_alert_type = ""
+    soundd.current_volume = 1.0
+    soundd.auto_volume = 0.5
+    angry_key = starpilot_alert_key(StarPilotAudibleAlert.angry)
+    soundd.loaded_sounds = {
+      AudibleAlert.engage: np.ones(4800, dtype=np.float32),
+      angry_key: np.ones(4800, dtype=np.float32),
+    }
+    soundd.current_sound_frame = 0
+    soundd.model_ready_pending = False
+    soundd.model_ready_last_check = 0.0
+    soundd.model_ready_params = SimpleNamespace(get_bool=lambda _key: False)
+    soundd.model_ready_chime = type("Chime", (), {"update": lambda *args, **kwargs: False, "consume": lambda self: None})()
+
+    sm = {
+      "selfdriveState": SimpleNamespace(
+        alertSound=SimpleNamespace(raw=AudibleAlert.engage),
+        alertType="engage",
+        alertStatus=log.SelfdriveState.AlertStatus.normal,
+        alertSize=log.SelfdriveState.AlertSize.none,
+      ),
+      "starpilotSelfdriveState": SimpleNamespace(
+        vEgo=20.0,
+        alertSound=SimpleNamespace(raw=StarPilotAudibleAlert.angry),
+        alertType="angry/warning",
+      ),
+    }
+    sm = type("SounddSM", (dict,), {
+      "updated": {"selfdriveState": True, "starpilotSelfdriveState": True, "soundPressure": False},
+      "valid": {"selfdriveState": True, "starpilotSelfdriveState": True},
+      "alive": {"selfdriveState": True},
+    })(sm)
+
+    soundd.get_audible_alert(sm)
+
+    assert soundd.current_alert == AudibleAlert.engage
+    assert soundd.current_alert_type == "engage"
+    assert soundd.current_alert != angry_key
+
+  def test_volume_map_miss_uses_auto_volume_with_alert_volume_controller(self):
+    soundd = Soundd.__new__(Soundd)
+    soundd.params_memory = type("Params", (), {"get": lambda self, _key: None, "remove": lambda self, _key: None})()
+    soundd.error_log = type("Path", (), {"is_file": lambda self: False})()
+    soundd.openpilot_crashed_played = False
+    soundd.selfdrive_timeout_alert = False
+    soundd.starpilot_toggles = SimpleNamespace(
+      alert_volume_controller=True,
+      goat_scream_critical_alerts=False,
+      turn_steering_limit_mute_speed=25.0,
+      engage_volume=80,
+      disengage_volume=80,
+      refuse_volume=80,
+      prompt_volume=80,
+      promptDistracted_volume=80,
+      warningSoft_volume=80,
+      warningImmediate_volume=80,
+      below_steer_speed_volume=80,
+    )
+    soundd.volume_map = {}
+    soundd.current_alert = AudibleAlert.none
+    soundd.current_alert_type = "engage"
+    soundd.current_volume = 0.0
+    soundd.auto_volume = 0.37
+    soundd.loaded_sounds = {AudibleAlert.engage: np.ones(4800, dtype=np.float32)}
+    soundd.current_sound_frame = 0
+    soundd.model_ready_pending = False
+    soundd.model_ready_last_check = 0.0
+    soundd.model_ready_params = SimpleNamespace(get_bool=lambda _key: False)
+    soundd.model_ready_chime = type("Chime", (), {"update": lambda *args, **kwargs: False, "consume": lambda self: None})()
+
+    sm = {
+      "selfdriveState": SimpleNamespace(
+        alertSound=SimpleNamespace(raw=AudibleAlert.engage),
+        alertType="engage",
+        alertStatus=log.SelfdriveState.AlertStatus.normal,
+        alertSize=log.SelfdriveState.AlertSize.none,
+      ),
+      "starpilotSelfdriveState": SimpleNamespace(
+        vEgo=30.0,
+        alertSound=SimpleNamespace(raw=StarPilotAudibleAlert.none),
+        alertType="",
+      ),
+    }
+    sm = type("SounddSM", (dict,), {
+      "updated": {"selfdriveState": True, "starpilotSelfdriveState": False, "soundPressure": False},
+      "valid": {"selfdriveState": True, "starpilotSelfdriveState": True},
+      "alive": {"selfdriveState": True},
+    })(sm)
+
+    assert soundd.get_volume_override(AudibleAlert.engage) == pytest.approx(1.01)
+
+    soundd.update_audible_frame(sm)
+
+    assert soundd.current_alert == AudibleAlert.engage
+    assert soundd.current_volume == pytest.approx(0.37)
+    assert soundd.current_volume != 0.0
+    assert soundd.current_volume != pytest.approx(1.01)
+
+  def test_starpilot_selfdrive_state_update_plays_starpilot_alert(self):
+    soundd = Soundd.__new__(Soundd)
+    soundd.params_memory = type("Params", (), {"get": lambda self, _key: None, "remove": lambda self, _key: None})()
+    soundd.error_log = type("Path", (), {"is_file": lambda self: False})()
+    soundd.openpilot_crashed_played = False
+    soundd.selfdrive_timeout_alert = False
+    soundd.starpilot_toggles = SimpleNamespace(
+      alert_volume_controller=False,
+      goat_scream_critical_alerts=False,
+      turn_steering_limit_mute_speed=0.0,
+    )
+    soundd.volume_map = {}
+    soundd.current_alert = AudibleAlert.none
+    soundd.current_alert_type = ""
+    soundd.current_volume = 1.0
+    soundd.auto_volume = 0.5
+    soundd.loaded_sounds = {}
+    angry_key = starpilot_alert_key(StarPilotAudibleAlert.angry)
+    soundd.loaded_sounds[angry_key] = np.ones(4800, dtype=np.float32)
+    soundd.current_sound_frame = 0
+    soundd.model_ready_pending = False
+    soundd.model_ready_last_check = 0.0
+    soundd.model_ready_params = SimpleNamespace(get_bool=lambda _key: False)
+    soundd.model_ready_chime = type("Chime", (), {"update": lambda *args, **kwargs: False, "consume": lambda self: None})()
+
+    sm = {
+      "selfdriveState": SimpleNamespace(
+        alertSound=SimpleNamespace(raw=AudibleAlert.none),
+        alertType="",
+        alertStatus=log.SelfdriveState.AlertStatus.normal,
+        alertSize=log.SelfdriveState.AlertSize.none,
+      ),
+      "starpilotSelfdriveState": SimpleNamespace(
+        vEgo=20.0,
+        alertSound=SimpleNamespace(raw=StarPilotAudibleAlert.angry),
+        alertType="angry/warning",
+      ),
+    }
+    sm = type("SounddSM", (dict,), {
+      "updated": {"selfdriveState": False, "starpilotSelfdriveState": True, "soundPressure": False},
+      "valid": {"selfdriveState": True, "starpilotSelfdriveState": True},
+      "alive": {"selfdriveState": True},
+    })(sm)
+
+    soundd.get_audible_alert(sm)
+
+    assert soundd.current_alert == angry_key
+    assert soundd.current_alert_type == "angry/warning"
 
   def test_check_selfdrive_timeout_alert(self):
     sm = SubMaster(['selfdriveState'])

@@ -256,8 +256,9 @@ class Soundd:
     if status:
       self.pending_stream_status = status
     samples = self.get_sound_data(frames)
-    bluetooth_healthy = self.bluetooth_audio.submit(samples) if self.bluetooth_audio is not None else False
-    data_out[:frames, 0] = 0.0 if bluetooth_healthy else samples
+    if self.bluetooth_audio is not None:
+      self.bluetooth_audio.submit(samples)
+    data_out[:frames, 0] = samples
 
   def update_bluetooth_audio(self) -> None:
     if not self.bluetooth_supported or time.monotonic() - self.bluetooth_last_check < 1.0:
@@ -280,12 +281,14 @@ class Soundd:
       return goat_alert
     return stock_alert
 
-  def update_alert(self, new_alert):
+  def update_alert(self, new_alert, sm=None):
     if new_alert != AudibleAlert.none and new_alert not in self.loaded_sounds:
       new_alert = AudibleAlert.none
     loaded = self.loaded_sounds.get(self.current_alert)
     current_alert_played_once = self.current_alert == AudibleAlert.none or loaded is None or self.current_sound_frame > len(loaded)
     if self.current_alert != new_alert and (new_alert != AudibleAlert.none or current_alert_played_once):
+      if sm is not None and new_alert != AudibleAlert.none:
+        self.current_volume = self.compute_active_alert_volume(sm, new_alert)
       self.current_alert = new_alert
       self.current_sound_frame = 0
 
@@ -297,16 +300,16 @@ class Soundd:
 
       if test_alert == "belowSteerSpeed":
         self.current_alert_type = "belowSteerSpeed/warning"
-        self.update_alert(AudibleAlert.prompt)
+        self.update_alert(AudibleAlert.prompt, sm)
       else:
         self.current_alert_type = ""
-        self.update_alert(getattr(AudibleAlert, test_alert))
+        self.update_alert(getattr(AudibleAlert, test_alert), sm)
       self.params_memory.remove("TestAlert")
     elif not self.openpilot_crashed_played and self.error_log.is_file():
       self.current_alert_type = ""
-      self.update_alert(AudibleAlert.prompt)
+      self.update_alert(AudibleAlert.prompt, sm)
       self.openpilot_crashed_played = True
-    elif sm.updated['selfdriveState']:
+    elif sm.updated['selfdriveState'] or sm.updated['starpilotSelfdriveState']:
       new_alert = sm['selfdriveState'].alertSound.raw
       new_alert_type = sm['selfdriveState'].alertType
 
@@ -323,10 +326,10 @@ class Soundd:
         new_alert_type = sm['starpilotSelfdriveState'].alertType
 
       self.current_alert_type = new_alert_type
-      self.update_alert(new_alert)
+      self.update_alert(new_alert, sm)
     elif check_selfdrive_timeout_alert(sm):
       self.current_alert_type = ""
-      self.update_alert(AudibleAlert.warningImmediate)
+      self.update_alert(AudibleAlert.warningImmediate, sm)
       self.selfdrive_timeout_alert = True
     elif self.selfdrive_timeout_alert:
       self.current_alert_type = ""
@@ -358,13 +361,49 @@ class Soundd:
       self.model_ready_chime.consume()
       self.model_ready_pending = False
       self.current_alert_type = ""
-      self.update_alert(GPU_MODEL_READY_ALERT)
+      self.update_alert(GPU_MODEL_READY_ALERT, sm)
 
-  def get_volume_override(self):
+  def update_audible_frame(self, sm):
+    self.get_audible_alert(sm)
+    self.update_model_ready_sound(sm)
+    self._update_idle_auto_volume(sm)
+    self.apply_current_alert_volume(sm)
+
+  def _update_idle_auto_volume(self, sm):
+    if not (sm.updated['soundPressure'] and self.current_alert == AudibleAlert.none):
+      return
+    self.spl_filter_weighted.update(sm["soundPressure"].soundPressureWeightedDb)
+    self.auto_volume = self.calculate_volume(float(self.spl_filter_weighted.x))
+    self.current_volume = self.auto_volume
+    if self.starpilot_toggles.alert_volume_controller:
+      self.current_volume = 0.0
+
+  def compute_active_alert_volume(self, sm, alert):
+    v_ego = max(float(getattr(sm["starpilotSelfdriveState"], "vEgo", 0.0)), 0.0)
+    if should_mute_turn_steering_limit_alert(
+      self.current_alert_type,
+      v_ego,
+      float(getattr(self.starpilot_toggles, "turn_steering_limit_mute_speed", 0.0)),
+    ):
+      return 0.0
+    if self.starpilot_toggles.alert_volume_controller:
+      volume = self.get_volume_override(alert)
+      if volume == 1.01:
+        return self.auto_volume
+      return volume
+    return self.auto_volume
+
+  def apply_current_alert_volume(self, sm):
+    if self.current_alert == AudibleAlert.none:
+      return
+    self.current_volume = self.compute_active_alert_volume(sm, self.current_alert)
+
+  def get_volume_override(self, alert=None):
     if self.current_alert_type.startswith("belowSteerSpeed/"):
       return self.starpilot_toggles.below_steer_speed_volume / 100.0
 
-    return self.volume_map.get(self.current_alert, 1.01)
+    active_alert = self.current_alert if alert is None else alert
+    return self.volume_map.get(active_alert, 1.01)
 
   def calculate_volume(self, weighted_db):
     volume = ((weighted_db - AMBIENT_DB) / DB_SCALE) * (MAX_VOLUME - MIN_VOLUME) + MIN_VOLUME
@@ -417,31 +456,7 @@ class Soundd:
             self.pending_stream_status = None
             cloudlog.warning(f"soundd stream over/underflow: {status}")
 
-          if sm.updated['soundPressure'] and self.current_alert == AudibleAlert.none: # only update volume filter when not playing alert
-            self.spl_filter_weighted.update(sm["soundPressure"].soundPressureWeightedDb)
-            self.auto_volume = self.calculate_volume(float(self.spl_filter_weighted.x))
-            self.current_volume = self.auto_volume
-
-            if self.starpilot_toggles.alert_volume_controller:
-              self.current_volume = 0.0
-
-          self.get_audible_alert(sm)
-          self.update_model_ready_sound(sm)
-
-          if self.current_alert != AudibleAlert.none:
-            v_ego = max(float(getattr(sm["starpilotSelfdriveState"], "vEgo", 0.0)), 0.0)
-            if should_mute_turn_steering_limit_alert(
-              self.current_alert_type,
-              v_ego,
-              float(getattr(self.starpilot_toggles, "turn_steering_limit_mute_speed", 0.0)),
-            ):
-              self.current_volume = 0.0
-            elif self.starpilot_toggles.alert_volume_controller:
-              self.current_volume = self.get_volume_override()
-              if self.current_volume == 1.01:
-                self.current_volume = self.auto_volume
-            else:
-              self.current_volume = self.auto_volume
+          self.update_audible_frame(sm)
 
           rk.keep_time()
 

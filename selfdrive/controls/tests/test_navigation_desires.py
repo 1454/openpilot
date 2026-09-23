@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from cereal import log
 
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper, LaneChangeDirection, LaneChangeState
+from openpilot.common.realtime import DT_MDL
 
 
 def make_car_state(**overrides):
@@ -702,3 +703,111 @@ def test_nav_lane_positioning_requires_driver_confirmation():
   )
 
   assert helper.desire == log.Desire.none
+
+
+def test_lane_change_starting_low_prob_does_not_finish_early():
+  helper = DesireHelper()
+  helper._update_nav_params = lambda: None
+  helper.lane_change_state = LaneChangeState.laneChangeStarting
+  helper.lane_change_direction = LaneChangeDirection.left
+  helper.lane_change_ll_prob = 1.0
+  helper.lane_change_prob_seen = False
+
+  frames = int(0.5 / DT_MDL)
+  for _ in range(frames):
+    helper.update(
+      make_car_state(leftBlinker=True),
+      True,
+      0.01,
+      make_plan(),
+      make_toggles(nudgeless=True),
+    )
+
+  assert helper.lane_change_state == LaneChangeState.laneChangeStarting
+
+
+def test_lane_change_finishing_requires_prior_high_lane_change_prob():
+  helper = DesireHelper()
+  helper._update_nav_params = lambda: None
+  helper.lane_change_state = LaneChangeState.laneChangeStarting
+  helper.lane_change_direction = LaneChangeDirection.left
+  helper.lane_change_ll_prob = 1.0
+  helper.lane_change_prob_seen = False
+
+  helper.update(
+    make_car_state(leftBlinker=True),
+    True,
+    0.25,
+    make_plan(),
+    make_toggles(nudgeless=True),
+  )
+  assert helper.lane_change_prob_seen
+
+  frames = int(0.5 / DT_MDL) + 1
+  for _ in range(frames):
+    helper.update(
+      make_car_state(leftBlinker=True),
+      True,
+      0.01,
+      make_plan(),
+      make_toggles(nudgeless=True),
+    )
+
+  assert helper.lane_change_state == LaneChangeState.laneChangeFinishing
+
+
+def test_lane_change_timeout_with_blinker_returns_to_pre_lane_change():
+  helper = DesireHelper()
+  helper._update_nav_params = lambda: None
+  helper.lane_change_state = LaneChangeState.laneChangeStarting
+  helper.lane_change_direction = LaneChangeDirection.left
+  helper.lane_change_timer = 10.05
+
+  helper.update(
+    make_car_state(leftBlinker=True),
+    True,
+    0.5,
+    make_plan(),
+    make_toggles(nudgeless=True),
+  )
+
+  assert helper.lane_change_state == LaneChangeState.preLaneChange
+  assert helper.lane_change_direction == LaneChangeDirection.left
+
+
+def test_lane_change_timeout_with_lateral_inactive_goes_off():
+  helper = DesireHelper()
+  helper._update_nav_params = lambda: None
+  helper.lane_change_state = LaneChangeState.laneChangeStarting
+  helper.lane_change_direction = LaneChangeDirection.left
+  helper.lane_change_timer = 10.05
+
+  helper.update(
+    make_car_state(leftBlinker=True),
+    False,
+    0.5,
+    make_plan(),
+    make_toggles(nudgeless=True),
+  )
+
+  assert helper.lane_change_state == LaneChangeState.off
+  assert helper.lane_change_direction == LaneChangeDirection.none
+
+
+def test_lane_change_timeout_when_lane_changes_disallowed_goes_off():
+  helper = DesireHelper()
+  helper._update_nav_params = lambda: None
+  helper.lane_change_state = LaneChangeState.laneChangeStarting
+  helper.lane_change_direction = LaneChangeDirection.left
+  helper.lane_change_timer = 10.05
+
+  helper.update(
+    make_car_state(leftBlinker=True),
+    True,
+    0.5,
+    make_plan(),
+    make_toggles(nudgeless=True, lane_changes=False),
+  )
+
+  assert helper.lane_change_state == LaneChangeState.off
+  assert helper.lane_change_direction == LaneChangeDirection.none
