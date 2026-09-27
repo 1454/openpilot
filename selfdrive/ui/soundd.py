@@ -409,18 +409,41 @@ class Soundd:
     volume = ((weighted_db - AMBIENT_DB) / DB_SCALE) * (MAX_VOLUME - MIN_VOLUME) + MIN_VOLUME
     return math.pow(VOLUME_BASE, (np.clip(volume, MIN_VOLUME, MAX_VOLUME) - 1))
 
+  def get_output_devices(self, sd):
+    # AGNOS often brings ALSA up after soundd, and the default device is not always the speaker.
+    devices = [None]
+    try:
+      for index, dev in enumerate(sd.query_devices()):
+        if dev.get("max_output_channels", 0) > 0:
+          devices.append(index)
+    except Exception:
+      cloudlog.exception("soundd: failed to enumerate audio devices")
+    return list(dict.fromkeys(devices))
+
   @retry(attempts=10, delay=3)
-  def get_stream(self, sd):
+  def start_stream(self, sd):
     # reload sounddevice to reinitialize portaudio
     sd._terminate()
     sd._initialize()
-    return sd.OutputStream(channels=1, samplerate=SAMPLE_RATE, callback=self.callback, blocksize=SAMPLE_BUFFER)
-
-  def start_stream(self, sd):
-    stream = self.get_stream(sd)
-    stream.start()
-    cloudlog.info(f"soundd stream started: {stream.samplerate=} {stream.channels=} {stream.dtype=} {stream.device=}, {stream.blocksize=}")
-    return stream
+    last_error = None
+    for device in self.get_output_devices(sd):
+      try:
+        kwargs = {
+          "channels": 1,
+          "samplerate": SAMPLE_RATE,
+          "callback": self.callback,
+          "blocksize": SAMPLE_BUFFER,
+        }
+        if device is not None:
+          kwargs["device"] = device
+        stream = sd.OutputStream(**kwargs)
+        stream.start()
+        cloudlog.info(f"soundd stream started: {stream.samplerate=} {stream.channels=} {stream.dtype=} {stream.device=}, {stream.blocksize=}")
+        return stream
+      except Exception as exc:
+        last_error = exc
+        cloudlog.exception(f"soundd: failed to open output stream (device={device})")
+    raise last_error or RuntimeError("soundd: no output device")
 
   def describe_stream(self, stream) -> str:
     attrs = {
@@ -518,10 +541,9 @@ class Soundd:
       self.previous_sound_pack = self.starpilot_toggles.sound_pack
       self.previous_sound_source_signature = sound_source_signature
 
-      if stream is not None:
+      if stream is not None and sd is not None:
         stream.close()
-        stream = self.get_stream(sd)
-        stream.start()
+        stream = self.start_stream(sd)
 
     return stream
 
