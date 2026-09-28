@@ -1497,8 +1497,6 @@ class StarPilotVariables:
     toggle.startup_alert_bottom = self.get_value("StartupMessageBottom", cast=str, default="")
 
     if toggle.simple_mode:
-      toggle.alert_volume_controller = False
-
       toggle.color_scheme = "stock"
       toggle.current_holiday_theme = "stock"
       toggle.holiday_themes = False

@@ -859,6 +859,21 @@ def test_lightning_stopped_lead_guard_tune_is_vehicle_specific():
   assert get_tracked_lead_catchup_bias_gain(civic) is None
 
 
+def test_mach_e_standstill_gap_settle_covers_observed_gap_without_changing_other_cars():
+  mach_e = FordCarInterface.get_non_essential_params(FORD_CAR.FORD_MUSTANG_MACH_E_MK1)
+  civic = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  lead = make_lead(status=True, d_rel=7.7, v_lead=0.0, radar=True, model_prob=1.0, y_rel=0.0)
+
+  assert get_standstill_gap_settle_max_extra_gap(mach_e) == pytest.approx(2.5)
+  assert get_standstill_gap_settle_max_extra_gap(civic) == pytest.approx(1.5)
+  assert LongitudinalPlanner.is_radar_standstill_gap_settle_candidate(
+    lead, 0.0, 5.5, max_extra_gap=get_standstill_gap_settle_max_extra_gap(mach_e))
+  assert not LongitudinalPlanner.is_radar_standstill_gap_settle_candidate(
+    lead, 0.0, 5.5, max_extra_gap=get_standstill_gap_settle_max_extra_gap(civic))
+  assert not LongitudinalPlanner.is_radar_standstill_gap_settle_candidate(
+    lead, 0.5, 5.5, max_extra_gap=get_standstill_gap_settle_max_extra_gap(mach_e))
+
+
 def test_lightning_stopped_radar_lead_handoff_is_narrow_and_vehicle_specific():
   lightning = FordCarInterface.get_non_essential_params(FORD_CAR.FORD_F_150_LIGHTNING_MK1)
   civic = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)

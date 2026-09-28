@@ -78,6 +78,13 @@ MACH_E_SHARP_DIRECTION_CHANGE_MIN_ACCEL = 1.8
 MACH_E_SHARP_DIRECTION_CHANGE_FULL_ACCEL = 2.2
 MACH_E_SHARP_DIRECTION_CHANGE_MIN_LAG_CURVATURE = -0.0005
 MACH_E_SHARP_DIRECTION_CHANGE_FULL_LAG_CURVATURE = 0.0008
+MACH_E_UNDERSTEER_ERROR_MAX = 0.006
+MACH_E_UNDERSTEER_ERROR_MIN_DEFICIT = 0.002
+MACH_E_UNDERSTEER_ERROR_FULL_DEFICIT = 0.004
+MACH_E_PATH_ANGLE_MAX = 0.16
+MACH_E_PATH_ANGLE_STEP = 0.055
+MACH_E_PATH_ANGLE_FADE_START_SPEED = 8.0
+MACH_E_PATH_ANGLE_MAX_SPEED = 8.8
 FORD_CURVATURE_LOOKAHEAD = {
   CAR.FORD_EXPLORER_MK6: 0.20,
 }
@@ -99,6 +106,7 @@ MANUAL_TURN_RECOVERY_SECONDS = 0.25
 class FordLateralResult:
   curvature: float = 0.0
   curvature_rate: float = 0.0
+  path_angle: float = 0.0
   ramp_type: int = 0
   precision_type: int = 1
   active: bool = False
@@ -162,6 +170,7 @@ class FordLateralController:
     self.manual_turn_direction = 0.0
     self.curvature_samples = deque(maxlen=max(2, round(0.3 / STEER_DT)))
     self.curvature_last = 0.0
+    self.path_angle_last = 0.0
     self.desired_curvature_last = 0.0
     self._frame = 0
     self._update_params()
@@ -210,6 +219,37 @@ class FordLateralController:
   @staticmethod
   def _current_curvature(CS) -> float:
     return -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)
+
+  def _curvature_error_limit(self, requested: float, desired: float, current: float, v_ego: float,
+                             steering_pressed: bool, lane_change: bool) -> float:
+    base = CarControllerParams.CURVATURE_ERROR
+    if (self.CP.carFingerprint != CAR.FORD_MUSTANG_MACH_E_MK1 or not self.CP.flags & FordFlags.CANFD or
+        steering_pressed or lane_change or requested * desired <= 0.0 or abs(desired) < 0.003):
+      return base
+    deficit = np.sign(desired) * (requested - current)
+    speed_weight = float(np.interp(v_ego, [9.0, 10.0, 14.0, 16.0], [0.0, 1.0, 1.0, 0.0]))
+    deficit_weight = float(np.interp(
+      deficit, [MACH_E_UNDERSTEER_ERROR_MIN_DEFICIT, MACH_E_UNDERSTEER_ERROR_FULL_DEFICIT], [0.0, 1.0]))
+    return base + (MACH_E_UNDERSTEER_ERROR_MAX - base) * speed_weight * deficit_weight
+
+  def _path_angle_assist(self, requested: float, desired: float, applied: float, v_ego: float,
+                         steering_pressed: bool, lane_change: bool) -> float:
+    target = 0.0
+    if (self.CP.carFingerprint == CAR.FORD_MUSTANG_MACH_E_MK1 and self.CP.flags & FordFlags.CANFD and
+        not steering_pressed and not lane_change and 3.0 <= v_ego < MACH_E_PATH_ANGLE_MAX_SPEED and
+        requested * desired > 0.0 and requested * applied > 0.0 and
+        abs(requested) > 0.021 and abs(desired) > 0.021 and abs(applied) >= 0.0195):
+      max_curvature = MAX_LATERAL_ACCEL / v_ego ** 2
+      residual = max(0.0, min(abs(requested), abs(desired), max_curvature) - abs(applied))
+      speed_weight = float(np.interp(
+        v_ego, [MACH_E_PATH_ANGLE_FADE_START_SPEED, MACH_E_PATH_ANGLE_MAX_SPEED], [1.0, 0.0]))
+      target = float(np.sign(applied) * min(residual * v_ego * speed_weight, MACH_E_PATH_ANGLE_MAX))
+    if target == 0.0 or target * self.path_angle_last < 0.0:
+      self.path_angle_last = 0.0
+    else:
+      self.path_angle_last = float(np.clip(
+        target, self.path_angle_last - MACH_E_PATH_ANGLE_STEP, self.path_angle_last + MACH_E_PATH_ANGLE_STEP))
+    return self.path_angle_last
 
   def _blend_and_scale(self, desired: float, predicted: float, v_ego: float, current: float = 0.0,
                        allow_opposite_preview: bool = False) -> tuple[float, int]:
@@ -436,6 +476,7 @@ class FordLateralController:
       self.manual_turn_direction = 0.0
       self.curvature_samples.clear()
       self.curvature_last = 0.0
+      self.path_angle_last = 0.0
       self.desired_curvature_last = 0.0
       return FordLateralResult()
 
@@ -443,6 +484,7 @@ class FordLateralController:
     if manual_turn or CS.out.vEgoRaw < 0.1:
       self.curvature_samples.clear()
       self.curvature_last = 0.0
+      self.path_angle_last = 0.0
       self.desired_curvature_last = 0.0
       return FordLateralResult(active=not (
         manual_turn and self.CP.carFingerprint in FORD_MANUAL_TURN_LATCH_CARS))
@@ -506,13 +548,16 @@ class FordLateralController:
     self.desired_curvature_last = desired
 
     if v_ego > 9.0:
-      requested = float(np.clip(requested, current - CarControllerParams.CURVATURE_ERROR,
-                                current + CarControllerParams.CURVATURE_ERROR))
+      error_limit = self._curvature_error_limit(
+        requested, desired, current, v_ego, bool(CS.out.steeringPressed), self._lane_change()[0])
+      requested = float(np.clip(requested, current - error_limit, current + error_limit))
     applied = float(apply_std_steer_angle_limits(
       requested, self.curvature_last, v_ego, CS.out.steeringAngleDeg, True, FORD_CURVATURE_LIMITS))
     if self.CP.flags & FordFlags.CANFD:
       max_curvature = MAX_LATERAL_ACCEL / max(v_ego, 1.0) ** 2
       applied = float(np.clip(applied, -max_curvature, max_curvature))
+    path_angle = self._path_angle_assist(
+      requested, desired, applied, v_ego, bool(CS.out.steeringPressed), self._lane_change()[0])
 
     self.curvature_samples.append(predicted)
     curvature_rate = 0.0
@@ -532,6 +577,7 @@ class FordLateralController:
     return FordLateralResult(
       curvature=self.curvature_last,
       curvature_rate=curvature_rate,
+      path_angle=path_angle,
       ramp_type=2,
       precision_type=precision,
       active=True,

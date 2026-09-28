@@ -276,7 +276,7 @@ GENESIS_GV70_OUTPUT_SMOOTHING_UNWIND_PHASE_WIDTH = 0.08
 GENESIS_GV70_OUTPUT_SMOOTHING_DIRECTION_CHANGE_LAT = 0.55
 GENESIS_GV70_OUTPUT_SMOOTHING_DIRECTION_CHANGE_RC = 0.065
 GENESIS_GV70_HIGHWAY_STABILIZER_SPEED_BP = [40.0 * CV.MPH_TO_MS, 50.0 * CV.MPH_TO_MS]
-GENESIS_GV70_HIGHWAY_STABILIZER_CENTER_LAT_BP = [0.45, 0.65]
+GENESIS_GV70_HIGHWAY_STABILIZER_CENTER_LAT_BP = [0.75, 1.0]
 GENESIS_GV70_HIGHWAY_STABILIZER_BASELINE_RC = 0.85
 GENESIS_GV70_HIGHWAY_STABILIZER_BLEND_RC = 0.35
 GENESIS_GV70_HIGHWAY_STABILIZER_REVERSAL_LAT = 0.06
@@ -288,6 +288,11 @@ GENESIS_G70_FRICTION_THRESHOLD_GAIN = 0.10
 GENESIS_G70_CURVE_TURN_IN_JERK_REDUCTION = 0.50
 GENESIS_G70_CURVE_TURN_IN_SPEED_BP = [20.0, 25.0]
 GENESIS_G70_CURVE_TURN_IN_LAT_BP = [0.35, 0.70]
+GENESIS_G70_HIGHWAY_TURN_IN_OUTPUT_REDUCTION = 0.12
+GENESIS_G70_HIGHWAY_TURN_IN_SPEED_BP = [26.0, 32.0]
+GENESIS_G70_HIGHWAY_TURN_IN_LAT_BP = [0.70, 1.10]
+GENESIS_G70_HIGHWAY_TURN_IN_JERK_BP = [0.25, 0.60]
+GENESIS_G70_HIGHWAY_TURN_IN_TRACKING_BP = [0.70, 0.90, 1.10]
 GENESIS_G70_FRICTION_THRESHOLD_SPEED_BP = [10.0, 20.0]
 GENESIS_G70_FRICTION_THRESHOLD_SPEED_V = [1.0, 2.0]
 GENESIS_G70_FRICTION_SPEED_ONSET = 10.0
@@ -3504,6 +3509,20 @@ def get_genesis_g70_high_speed_error_scale(setpoint: float, measured_lateral_acc
                (0.35 + (0.65 * jerk_weight)) * phase_weight *
                get_genesis_g70_overshoot_blend(setpoint, measured_lateral_accel))
   return 1.0 - reduction
+
+
+def get_genesis_g70_highway_turn_in_output_scale(output_torque: float, setpoint: float,
+                                                   measured_lateral_accel: float,
+                                                   desired_lateral_jerk: float, v_ego: float) -> float:
+  if (setpoint * desired_lateral_jerk <= 0.0 or setpoint * measured_lateral_accel <= 0.0 or
+      output_torque * setpoint >= 0.0):
+    return 1.0
+  speed_weight = np.interp(v_ego, GENESIS_G70_HIGHWAY_TURN_IN_SPEED_BP, [0.0, 1.0])
+  curve_weight = np.interp(abs(setpoint), GENESIS_G70_HIGHWAY_TURN_IN_LAT_BP, [0.0, 1.0])
+  jerk_weight = np.interp(abs(desired_lateral_jerk), GENESIS_G70_HIGHWAY_TURN_IN_JERK_BP, [0.0, 1.0])
+  tracking_weight = np.interp(abs(measured_lateral_accel / setpoint),
+                              GENESIS_G70_HIGHWAY_TURN_IN_TRACKING_BP, [0.0, 1.0, 0.0])
+  return 1.0 - GENESIS_G70_HIGHWAY_TURN_IN_OUTPUT_REDUCTION * speed_weight * curve_weight * jerk_weight * tracking_weight
 
 
 def get_genesis_g70_stabilized_output(output_torque: float, prev_output_torque: float,

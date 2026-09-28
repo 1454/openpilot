@@ -35,6 +35,18 @@ if HARDWARE.get_device_type() in ("tici", "tizi"):
 # micd publishes 0 when the mic stream never opens. A cabin is not this quiet.
 MIC_DEAD_DB = 5.0
 
+VOLUME_SETTINGS_REFRESH_INTERVAL = 0.25
+VOLUME_SETTING_KEYS = (
+  "BelowSteerSpeedVolume",
+  "DisengageVolume",
+  "EngageVolume",
+  "PromptVolume",
+  "PromptDistractedVolume",
+  "RefuseVolume",
+  "WarningImmediateVolume",
+  "WarningSoftVolume",
+)
+
 AudibleAlert = log.SelfdriveState.AudibleAlert
 
 StarPilotAudibleAlert = custom.StarPilotCarControl.HUDControl.AudibleAlert
@@ -68,6 +80,23 @@ def should_mute_turn_steering_limit_alert(alert_type: str, v_ego: float, mute_be
     v_ego < mute_below_speed and
     is_turn_steering_limit_alert(alert_type)
   )
+
+
+def read_volume_settings(params):
+  def read_int(key, minimum=0):
+    try:
+      value = int(params.get_int(key, return_default=True, default=101))
+    except (TypeError, ValueError, OSError):
+      value = 101
+    return max(minimum, min(value, 101))
+
+  return {
+    "alert_volume_controller": params.get_bool("AlertVolumeControl"),
+    **{
+      key: read_int(key, minimum=25 if key in ("WarningImmediateVolume", "WarningSoftVolume") else 0)
+      for key in VOLUME_SETTING_KEYS
+    },
+  }
 
 
 sound_list: dict[int, tuple[str, int | None, float]] = {
@@ -137,6 +166,9 @@ class Soundd:
     self.spl_filter_weighted = FirstOrderFilter(0, 2.5, FILTER_DT, initialized=False)
 
     self.params_memory = Params(memory=True)
+    self.volume_params = Params(return_defaults=True)
+    self.volume_settings = read_volume_settings(self.volume_params)
+    self.last_volume_settings_refresh = 0.0
     from openpilot.starpilot.common.gpu_model_ready_sound import GpuModelReadyChime
     self.model_ready_chime = GpuModelReadyChime()
     self.model_ready_params = Params(return_defaults=True)
@@ -375,6 +407,12 @@ class Soundd:
       self.current_alert_type = ""
       self.update_alert(GPU_MODEL_READY_ALERT, sm)
 
+  def alert_volume_controller_enabled(self) -> bool:
+    settings = getattr(self, "volume_settings", None)
+    if isinstance(settings, dict) and "alert_volume_controller" in settings:
+      return bool(settings["alert_volume_controller"])
+    return bool(getattr(self.starpilot_toggles, "alert_volume_controller", False))
+
   def update_audible_frame(self, sm):
     self.get_audible_alert(sm)
     self.update_model_ready_sound(sm)
@@ -391,7 +429,7 @@ class Soundd:
       self.logged_dead_mic = True
       cloudlog.error("soundd: mic level is dead, holding alert gain at 1.0")
     self.current_volume = self.auto_volume
-    if self.starpilot_toggles.alert_volume_controller:
+    if self.alert_volume_controller_enabled():
       self.current_volume = 0.0
 
   def compute_active_alert_volume(self, sm, alert):
@@ -402,7 +440,7 @@ class Soundd:
       float(getattr(self.starpilot_toggles, "turn_steering_limit_mute_speed", 0.0)),
     ):
       return 0.0
-    if self.starpilot_toggles.alert_volume_controller:
+    if self.alert_volume_controller_enabled():
       volume = self.get_volume_override(alert)
       if volume == 1.01:
         return self.auto_volume
@@ -416,7 +454,7 @@ class Soundd:
 
   def get_volume_override(self, alert=None):
     if self.current_alert_type.startswith("belowSteerSpeed/"):
-      return self.starpilot_toggles.below_steer_speed_volume / 100.0
+      return self.volume_settings["BelowSteerSpeedVolume"] / 100.0
 
     active_alert = self.current_alert if alert is None else alert
     return self.volume_map.get(active_alert, 1.01)
@@ -487,6 +525,7 @@ class Soundd:
 
         while True:
           sm.update(0)
+          self.refresh_volume_settings()
           self.update_bluetooth_audio()
 
           if self.pending_stream_status is not None:
@@ -518,24 +557,42 @@ class Soundd:
           except Exception:
             cloudlog.exception("soundd: failed to close stream")
 
-  def update_starpilot_sounds(self, sd=None, stream=None):
+  def refresh_volume_settings(self, now=None):
+    now = time.monotonic() if now is None else now
+    if now - self.last_volume_settings_refresh < VOLUME_SETTINGS_REFRESH_INTERVAL:
+      return False
+
+    self.last_volume_settings_refresh = now
+    volume_settings = read_volume_settings(self.volume_params)
+    if volume_settings == self.volume_settings:
+      return False
+
+    self.volume_settings = volume_settings
+    self.update_volume_map()
+    return True
+
+  def update_volume_map(self):
+    settings = self.volume_settings
     self.volume_map = {
-      AudibleAlert.engage: self.starpilot_toggles.engage_volume / 100.0,
-      AudibleAlert.disengage: self.starpilot_toggles.disengage_volume / 100.0,
-      AudibleAlert.refuse: self.starpilot_toggles.refuse_volume / 100.0,
+      AudibleAlert.engage: settings["EngageVolume"] / 100.0,
+      AudibleAlert.disengage: settings["DisengageVolume"] / 100.0,
+      AudibleAlert.refuse: settings["RefuseVolume"] / 100.0,
 
-      AudibleAlert.prompt: self.starpilot_toggles.prompt_volume / 100.0,
-      AudibleAlert.promptRepeat: self.starpilot_toggles.prompt_volume / 100.0,
-      AudibleAlert.promptDistracted: self.starpilot_toggles.promptDistracted_volume / 100.0,
+      AudibleAlert.prompt: settings["PromptVolume"] / 100.0,
+      AudibleAlert.promptRepeat: settings["PromptVolume"] / 100.0,
+      AudibleAlert.promptDistracted: settings["PromptDistractedVolume"] / 100.0,
 
-      AudibleAlert.preAlert: self.starpilot_toggles.promptDistracted_volume / 100.0,
+      AudibleAlert.preAlert: settings["PromptDistractedVolume"] / 100.0,
 
-      AudibleAlert.warningSoft: self.starpilot_toggles.warningSoft_volume / 100.0,
-      AudibleAlert.warningImmediate: self.starpilot_toggles.warningImmediate_volume / 100.0,
+      AudibleAlert.warningSoft: settings["WarningSoftVolume"] / 100.0,
+      AudibleAlert.warningImmediate: settings["WarningImmediateVolume"] / 100.0,
 
-      starpilot_alert_key(StarPilotAudibleAlert.goat): self.starpilot_toggles.prompt_volume / 100.0,
-      starpilot_alert_key(StarPilotAudibleAlert.startup): self.starpilot_toggles.engage_volume / 100.0
+      starpilot_alert_key(StarPilotAudibleAlert.goat): settings["PromptVolume"] / 100.0,
+      starpilot_alert_key(StarPilotAudibleAlert.startup): settings["EngageVolume"] / 100.0
     }
+
+  def update_starpilot_sounds(self, sd=None, stream=None):
+    self.update_volume_map()
 
     for sound in sound_list:
       if sound not in self.volume_map:

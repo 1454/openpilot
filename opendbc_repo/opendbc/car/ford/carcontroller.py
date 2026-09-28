@@ -165,7 +165,7 @@ class CarController(CarControllerBase):
           can_sends.append(starpilot_fordcan.create_lat_ctl2_msg(
             self.packer, self.CAN, 1 if lateral.active else 0,
             lateral.ramp_type, lateral.precision_type,
-            -lateral.curvature, -lateral.curvature_rate, counter))
+            -lateral.curvature, -lateral.curvature_rate, counter, -lateral.path_angle))
         else:
           can_sends.append(starpilot_fordcan.create_lat_ctl_msg(
             self.packer, self.CAN, lateral.active,

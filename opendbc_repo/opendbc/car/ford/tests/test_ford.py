@@ -192,10 +192,12 @@ def test_mach_e_longitudinal_toggle_controls_stock_acc_selection():
   assert not stock.openpilotLongitudinalControl
   assert stock.pcmCruise
   assert not (stock.safetyConfigs[-1].safetyParam & FordSafetyFlags.LONG_CONTROL)
+  assert stock.safetyConfigs[-1].safetyParam & FordSafetyFlags.MACH_E_CURVATURE
 
   assert enhanced.alphaLongitudinalAvailable
   assert enhanced.openpilotLongitudinalControl
   assert enhanced.safetyConfigs[-1].safetyParam & FordSafetyFlags.LONG_CONTROL
+  assert enhanced.safetyConfigs[-1].safetyParam & FordSafetyFlags.MACH_E_CURVATURE
 
 
 def test_mach_e_can_gps_decode():
