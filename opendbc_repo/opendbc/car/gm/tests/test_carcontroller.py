@@ -53,6 +53,8 @@ from opendbc.car.gm.carcontroller import (
   get_testing_ground_1_brake_switch_bias,
   get_acc_dashboard_status_active,
   get_stock_cc_active_for_cancel,
+  gm_tire_radius,
+  SILVERADO_22_TIRE_RADIUS_M,
   limit_grade_feedforward,
   shape_bolt_acc_pedal_low_speed_friction,
   shape_truck_friction_brake,
@@ -837,6 +839,16 @@ def test_calc_pedal_command_keeps_strong_positive_requests_responsive():
 
   assert not press_regen
   assert pedal_gas - 0.18 > 0.04
+
+
+def test_silverado_tire_radius_uses_high_country_22():
+  silverado = SimpleNamespace(carFingerprint=CAR.CHEVROLET_SILVERADO, wheelbase=3.75)
+  silverado_cc = SimpleNamespace(carFingerprint=CAR.CHEVROLET_SILVERADO_CC, wheelbase=3.75)
+  volt = SimpleNamespace(carFingerprint=CAR.CHEVROLET_VOLT, wheelbase=2.69)
+
+  assert gm_tire_radius(silverado) == pytest.approx(SILVERADO_22_TIRE_RADIUS_M)
+  assert gm_tire_radius(silverado_cc) == pytest.approx(0.4169)
+  assert gm_tire_radius(volt) == pytest.approx(0.075 * 2.69 + 0.1453)
 
 
 def test_shape_truck_positive_accel_softens_small_highway_requests():

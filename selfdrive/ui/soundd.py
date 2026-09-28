@@ -32,6 +32,8 @@ DB_SCALE = 30 # AMBIENT_DB + DB_SCALE is where MAX_VOLUME is applied
 VOLUME_BASE = 20
 if HARDWARE.get_device_type() in ("tici", "tizi"):
   VOLUME_BASE = 10
+# micd publishes 0 when the mic stream never opens. A cabin is not this quiet.
+MIC_DEAD_DB = 5.0
 
 AudibleAlert = log.SelfdriveState.AudibleAlert
 
@@ -105,6 +107,14 @@ if HARDWARE.get_device_type() in ("tici", "tizi"):
     AudibleAlert.disengage: ("disengage_tizi.wav", 1, MAX_VOLUME),
   })
 
+def alert_gain_from_weighted_db(weighted_db: float, volume_base: float = VOLUME_BASE) -> float:
+  """PCM gain from mic dB. A dead mic stays at full gain instead of the quiet floor."""
+  if weighted_db < MIC_DEAD_DB:
+    return 1.0
+  volume = ((weighted_db - AMBIENT_DB) / DB_SCALE) * (MAX_VOLUME - MIN_VOLUME) + MIN_VOLUME
+  return float(math.pow(volume_base, (np.clip(volume, MIN_VOLUME, MAX_VOLUME) - 1)))
+
+
 def check_selfdrive_timeout_alert(sm):
   ss_missing = time.monotonic() - sm.recv_time['selfdriveState']
 
@@ -137,7 +147,9 @@ class Soundd:
 
     self.openpilot_crashed_played = False
 
-    self.auto_volume = MIN_VOLUME
+    # Full gain until a real mic sample arrives. MIN_VOLUME here is about 0.13 on a comma and sounds dead.
+    self.auto_volume = 1.0
+    self.logged_dead_mic = False
     self.pending_stream_status = None
     self.bluetooth_audio = None
     self.bluetooth_supported = HARDWARE.get_device_type() in ("tici", "tizi", "mici")
@@ -372,8 +384,12 @@ class Soundd:
   def _update_idle_auto_volume(self, sm):
     if not (sm.updated['soundPressure'] and self.current_alert == AudibleAlert.none):
       return
-    self.spl_filter_weighted.update(sm["soundPressure"].soundPressureWeightedDb)
+    weighted_db = float(sm["soundPressure"].soundPressureWeightedDb)
+    self.spl_filter_weighted.update(weighted_db)
     self.auto_volume = self.calculate_volume(float(self.spl_filter_weighted.x))
+    if weighted_db < MIC_DEAD_DB and not getattr(self, "logged_dead_mic", False):
+      self.logged_dead_mic = True
+      cloudlog.error("soundd: mic level is dead, holding alert gain at 1.0")
     self.current_volume = self.auto_volume
     if self.starpilot_toggles.alert_volume_controller:
       self.current_volume = 0.0
@@ -406,8 +422,7 @@ class Soundd:
     return self.volume_map.get(active_alert, 1.01)
 
   def calculate_volume(self, weighted_db):
-    volume = ((weighted_db - AMBIENT_DB) / DB_SCALE) * (MAX_VOLUME - MIN_VOLUME) + MIN_VOLUME
-    return math.pow(VOLUME_BASE, (np.clip(volume, MIN_VOLUME, MAX_VOLUME) - 1))
+    return alert_gain_from_weighted_db(weighted_db)
 
   def get_output_devices(self, sd):
     # AGNOS often brings ALSA up after soundd, and the default device is not always the speaker.

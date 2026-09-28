@@ -66,6 +66,9 @@ TRUCK_LONG_SMOOTH_CARS = {
   CAR.CHEVROLET_SILVERADO,
   CAR.CHEVROLET_SILVERADO_CC,
 }
+# High Country 22 in wheel, OEM 275/50R22. Unloaded diameter is 32.8 in:
+# 22 * 25.4 mm + 2 * (275 mm * 0.50) = 833.8 mm.
+SILVERADO_22_TIRE_RADIUS_M = 0.4169
 TRUCK_FRICTION_BRAKE_ENGAGE = 40
 TRUCK_FRICTION_BRAKE_RELEASE = 8
 TRUCK_FRICTION_BRAKE_IMMEDIATE_ACCEL = -0.85
@@ -79,6 +82,12 @@ ACC_DASHBOARD_ZERO_RESERVED_CARS = {
   CAR.CHEVROLET_TRAILBLAZER,
   CAR.CHEVROLET_TRAX,
 }
+
+
+def gm_tire_radius(CP) -> float:
+  if CP.carFingerprint in TRUCK_LONG_SMOOTH_CARS:
+    return SILVERADO_22_TIRE_RADIUS_M
+  return 0.075 * CP.wheelbase + 0.1453
 
 
 def get_stock_cc_active_for_cancel(CP, CS):
@@ -558,7 +567,7 @@ class CarController(CarControllerBase):
       CAR.CHEVROLET_VOLT_CC,
     }
     self.mass = CP.mass
-    self.tireRadius = 0.075 * CP.wheelbase + 0.1453
+    self.tireRadius = gm_tire_radius(CP)
     self.frontalArea = 1.05 * CP.wheelbase + 0.0679
     self.coeffDrag = 0.30
     self.airDensity = 1.225

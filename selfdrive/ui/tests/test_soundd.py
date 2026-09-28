@@ -4,9 +4,11 @@ from cereal import custom, log
 from cereal import messaging
 from cereal.messaging import SubMaster, PubMaster
 from openpilot.selfdrive.ui.soundd import (
+  MIC_DEAD_DB,
   SELFDRIVE_STATE_TIMEOUT,
   SOUNDD_SERVICES,
   Soundd,
+  alert_gain_from_weighted_db,
   check_selfdrive_timeout_alert,
   is_turn_steering_limit_alert,
   should_mute_turn_steering_limit_alert,
@@ -543,3 +545,12 @@ class TestSoundd:
     assert check_selfdrive_timeout_alert(sm)
 
   # TODO: add test with micd for checking that soundd actually outputs sounds
+
+
+def test_dead_mic_holds_full_alert_gain():
+  assert MIC_DEAD_DB == 5.0
+  assert alert_gain_from_weighted_db(0.0, volume_base=10) == 1.0
+  assert alert_gain_from_weighted_db(60.0, volume_base=10) == pytest.approx(1.0)
+  quiet_room = alert_gain_from_weighted_db(30.0, volume_base=10)
+  assert quiet_room == pytest.approx(10 ** -0.9)
+  assert quiet_room < 0.2
