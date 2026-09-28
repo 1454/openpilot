@@ -9,6 +9,7 @@ from openpilot.selfdrive.ui.soundd import (
   SOUNDD_SERVICES,
   Soundd,
   alert_gain_from_weighted_db,
+  output_device_order,
   check_selfdrive_timeout_alert,
   is_turn_steering_limit_alert,
   read_volume_settings,
@@ -579,6 +580,19 @@ class TestSoundd:
     assert check_selfdrive_timeout_alert(sm)
 
   # TODO: add test with micd for checking that soundd actually outputs sounds
+
+
+def test_output_device_order_prefers_codec_hardware():
+  devices = [{"name": "dmix", "max_output_channels": 2}]
+  devices.extend({"name": f"capture-{index}", "max_output_channels": 0} for index in range(30))
+  devices.append({"name": "default", "max_output_channels": 2})
+  devices.append({"name": "sdm845-tavil-snd-card: - (hw:0,0)", "max_output_channels": 1})
+
+  order = output_device_order(devices)
+
+  assert order[0] == 32
+  assert order.index(0) > order.index(32)
+  assert all(devices[index]["max_output_channels"] > 0 for index in order)
 
 
 def test_dead_mic_holds_full_alert_gain():

@@ -136,6 +136,31 @@ if HARDWARE.get_device_type() in ("tici", "tizi"):
     AudibleAlert.disengage: ("disengage_tizi.wav", 1, MAX_VOLUME),
   })
 
+def output_device_order(devices) -> list[int]:
+  """Play on the comma codec hardware device before a plug device that merely opens."""
+  ranked = []
+  for index, dev in enumerate(devices):
+    if int(dev.get("max_output_channels", 0) or 0) <= 0:
+      continue
+    name = str(dev.get("name", "")).lower()
+    codec = any(token in name for token in ("tavil", "sdm845", "max98089"))
+    hardware = "hw:" in name
+    plug = any(token in name for token in ("dmix", "dsnoop", "surround", "iec958", "hdmi"))
+    if codec and hardware:
+      rank = 0
+    elif codec:
+      rank = 1
+    elif hardware and not plug:
+      rank = 2
+    elif plug:
+      rank = 4
+    else:
+      rank = 3
+    ranked.append((rank, index, name))
+  ranked.sort()
+  return [index for _, index, _ in ranked]
+
+
 def alert_gain_from_weighted_db(weighted_db: float, volume_base: float = VOLUME_BASE) -> float:
   """PCM gain from mic dB. A dead mic stays at full gain instead of the quiet floor."""
   if weighted_db < MIC_DEAD_DB:
@@ -463,15 +488,17 @@ class Soundd:
     return alert_gain_from_weighted_db(weighted_db)
 
   def get_output_devices(self, sd):
-    # AGNOS often brings ALSA up after soundd, and the default device is not always the speaker.
-    devices = [None]
+    # The default device throws on this comma. The first device that opens is not always the speaker.
     try:
-      for index, dev in enumerate(sd.query_devices()):
-        if dev.get("max_output_channels", 0) > 0:
-          devices.append(index)
+      devices = list(sd.query_devices())
     except Exception:
       cloudlog.exception("soundd: failed to enumerate audio devices")
-    return list(dict.fromkeys(devices))
+      return []
+    order = output_device_order(devices)
+    cloudlog.info("soundd output candidates: " + ", ".join(
+      f"{index}:{devices[index].get('name', '')}" for index in order
+    ))
+    return order
 
   @retry(attempts=10, delay=3)
   def start_stream(self, sd):
@@ -491,7 +518,12 @@ class Soundd:
           kwargs["device"] = device
         stream = sd.OutputStream(**kwargs)
         stream.start()
-        cloudlog.info(f"soundd stream started: {stream.samplerate=} {stream.channels=} {stream.dtype=} {stream.device=}, {stream.blocksize=}")
+        name = ""
+        try:
+          name = sd.query_devices(device).get("name", "")
+        except Exception:
+          pass
+        cloudlog.info(f"soundd stream started: {stream.samplerate=} {stream.channels=} {stream.dtype=} {stream.device=} {name=} {stream.blocksize=}")
         return stream
       except Exception as exc:
         last_error = exc
