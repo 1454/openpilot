@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from cereal import custom, log
 from cereal import messaging
 from cereal.messaging import SubMaster, PubMaster
+from openpilot.system.hardware.tici.amplifier import speaker_outputs_enabled
 from openpilot.selfdrive.ui.soundd import (
   MIC_DEAD_DB,
   SELFDRIVE_STATE_TIMEOUT,
@@ -580,6 +581,13 @@ class TestSoundd:
     assert check_selfdrive_timeout_alert(sm)
 
   # TODO: add test with micd for checking that soundd actually outputs sounds
+
+
+def test_speaker_outputs_enabled_requires_shutdown_bit_and_both_speakers():
+  assert speaker_outputs_enabled(0x80, 0x30, 0x01, 0x01)
+  assert not speaker_outputs_enabled(0x00, 0x30, 0x01, 0x01)
+  assert not speaker_outputs_enabled(0x80, 0x00, 0x01, 0x01)
+  assert not speaker_outputs_enabled(0x80, 0x30, 0x00, 0x01)
 
 
 def test_output_device_order_prefers_codec_hardware():

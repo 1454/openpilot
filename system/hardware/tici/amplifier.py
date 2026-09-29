@@ -99,6 +99,13 @@ CONFIGS = {
   ],
 }
 
+def speaker_outputs_enabled(shutdown: int, power: int, left: int, right: int) -> bool:
+  # Bit 7 set means the chip is out of shutdown. Speaker power is bits 5:4 of 0x4D.
+  operating = bool(shutdown & 0x80)
+  speakers_powered = (power & 0x30) == 0x30
+  return operating and speakers_powered and (left & 0xFF) != 0 and (right & 0xFF) != 0
+
+
 class Amplifier:
   AMP_I2C_BUS = 0
   AMP_ADDRESS = 0x10
@@ -138,6 +145,24 @@ class Amplifier:
 
   def set_global_shutdown(self, amp_disabled: bool) -> bool:
     return self.set_configs([self._get_shutdown_config(amp_disabled), ])
+
+  def read_speaker_registers(self) -> dict[str, int] | None:
+    try:
+      with SMBus(self.AMP_I2C_BUS) as bus:
+        return {
+          "shutdown": bus.read_byte_data(self.AMP_ADDRESS, 0x51, force=True),
+          "power": bus.read_byte_data(self.AMP_ADDRESS, 0x4D, force=True),
+          "left": bus.read_byte_data(self.AMP_ADDRESS, 0x2B, force=True),
+          "right": bus.read_byte_data(self.AMP_ADDRESS, 0x2C, force=True),
+        }
+    except OSError:
+      return None
+
+  def ensure_speakers_enabled(self, model: str) -> tuple[bool, dict[str, int] | None]:
+    state = self.read_speaker_registers()
+    if state is not None and speaker_outputs_enabled(**state):
+      return True, state
+    return self.initialize_configuration(model), state
 
   def initialize_configuration(self, model: str) -> bool:
     cfgs = [

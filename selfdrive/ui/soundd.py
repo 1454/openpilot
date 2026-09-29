@@ -449,10 +449,11 @@ class Soundd:
       return
     weighted_db = float(sm["soundPressure"].soundPressureWeightedDb)
     self.spl_filter_weighted.update(weighted_db)
-    self.auto_volume = self.calculate_volume(float(self.spl_filter_weighted.x))
-    if weighted_db < MIC_DEAD_DB and not getattr(self, "logged_dead_mic", False):
+    filtered_db = float(self.spl_filter_weighted.x)
+    self.auto_volume = self.calculate_volume(filtered_db)
+    if filtered_db < MIC_DEAD_DB and not getattr(self, "logged_dead_mic", False):
       self.logged_dead_mic = True
-      cloudlog.error("soundd: mic level is dead, holding alert gain at 1.0")
+      cloudlog.error(f"soundd: mic level is dead ({filtered_db:.1f} dB), holding alert gain at 1.0")
     self.current_volume = self.auto_volume
     if self.alert_volume_controller_enabled():
       self.current_volume = 0.0
@@ -500,8 +501,23 @@ class Soundd:
     ))
     return order
 
+  def enable_speaker_amp(self) -> None:
+    if HARDWARE.get_device_type() not in ("tici", "tizi"):
+      return
+    try:
+      from openpilot.system.hardware.tici.amplifier import Amplifier, speaker_outputs_enabled
+      ready, state = Amplifier().ensure_speakers_enabled(HARDWARE.get_device_type())
+    except Exception:
+      cloudlog.exception("soundd: speaker amp check failed")
+      return
+    if state is not None and speaker_outputs_enabled(**state):
+      cloudlog.info(f"soundd speaker amp already on: {state}")
+      return
+    cloudlog.error(f"soundd speaker amp was off: state={state} init_ok={ready}")
+
   @retry(attempts=10, delay=3)
   def start_stream(self, sd):
+    self.enable_speaker_amp()
     # reload sounddevice to reinitialize portaudio
     sd._terminate()
     sd._initialize()
