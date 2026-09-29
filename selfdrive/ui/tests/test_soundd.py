@@ -3,14 +3,12 @@ from types import SimpleNamespace
 from cereal import custom, log
 from cereal import messaging
 from cereal.messaging import SubMaster, PubMaster
-from openpilot.system.hardware.tici.amplifier import speaker_outputs_enabled
 from openpilot.selfdrive.ui.soundd import (
   MIC_DEAD_DB,
   SELFDRIVE_STATE_TIMEOUT,
   SOUNDD_SERVICES,
   Soundd,
   alert_gain_from_weighted_db,
-  output_device_order,
   check_selfdrive_timeout_alert,
   is_turn_steering_limit_alert,
   read_volume_settings,
@@ -583,24 +581,38 @@ class TestSoundd:
   # TODO: add test with micd for checking that soundd actually outputs sounds
 
 
-def test_speaker_outputs_enabled_requires_shutdown_bit_and_both_speakers():
-  assert speaker_outputs_enabled(0x80, 0x30, 0x01, 0x01)
-  assert not speaker_outputs_enabled(0x00, 0x30, 0x01, 0x01)
-  assert not speaker_outputs_enabled(0x80, 0x00, 0x01, 0x01)
-  assert not speaker_outputs_enabled(0x80, 0x30, 0x00, 0x01)
+def test_start_stream_tries_stock_default_before_named_routes():
+  class FakeStream:
+    def __init__(self, device):
+      self.device = 7 if device is None else device
+      self.samplerate, self.channels, self.dtype, self.blocksize = 48000, 1, "float32", 4096
 
+    def start(self):
+      pass
 
-def test_output_device_order_prefers_codec_hardware():
-  devices = [{"name": "dmix", "max_output_channels": 2}]
-  devices.extend({"name": f"capture-{index}", "max_output_channels": 0} for index in range(30))
-  devices.append({"name": "default", "max_output_channels": 2})
-  devices.append({"name": "sdm845-tavil-snd-card: - (hw:0,0)", "max_output_channels": 1})
+  opened = []
 
-  order = output_device_order(devices)
+  class FakeSd:
+    def _terminate(self):
+      pass
 
-  assert order[0] == 32
-  assert order.index(0) > order.index(32)
-  assert all(devices[index]["max_output_channels"] > 0 for index in order)
+    def _initialize(self):
+      pass
+
+    def query_devices(self, device=None):
+      devices = [{"name": "sdm845-tavil-snd-card: - (hw:0,0)", "max_output_channels": 1}] * 7
+      devices.append({"name": "pulse", "max_output_channels": 32})
+      return devices if device is None else devices[device]
+
+    def OutputStream(self, **kwargs):
+      opened.append(kwargs.get("device"))
+      return FakeStream(kwargs.get("device"))
+
+  s = Soundd()
+  stream = s.start_stream(FakeSd())
+
+  assert opened == [None]
+  assert stream.device == 7
 
 
 def test_dead_mic_holds_full_alert_gain():

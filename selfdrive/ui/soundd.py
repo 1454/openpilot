@@ -15,6 +15,7 @@ from openpilot.common.swaglog import cloudlog
 
 from openpilot.system import micd
 from openpilot.system.hardware import HARDWARE
+from openpilot.selfdrive.ui.sound_devices import describe_devices, output_device_order
 
 from openpilot.starpilot.common.starpilot_variables import ACTIVE_THEME_PATH, ERROR_LOGS_PATH, RANDOM_EVENTS_PATH, get_starpilot_toggles
 from openpilot.starpilot.system.bluetooth.audio import BluetoothAudioSink
@@ -135,31 +136,6 @@ if HARDWARE.get_device_type() in ("tici", "tizi"):
     AudibleAlert.engage: ("engage_tizi.wav", 1, MAX_VOLUME),
     AudibleAlert.disengage: ("disengage_tizi.wav", 1, MAX_VOLUME),
   })
-
-def output_device_order(devices) -> list[int]:
-  """Play on the comma codec hardware device before a plug device that merely opens."""
-  ranked = []
-  for index, dev in enumerate(devices):
-    if int(dev.get("max_output_channels", 0) or 0) <= 0:
-      continue
-    name = str(dev.get("name", "")).lower()
-    codec = any(token in name for token in ("tavil", "sdm845", "max98089"))
-    hardware = "hw:" in name
-    plug = any(token in name for token in ("dmix", "dsnoop", "surround", "iec958", "hdmi"))
-    if codec and hardware:
-      rank = 0
-    elif codec:
-      rank = 1
-    elif hardware and not plug:
-      rank = 2
-    elif plug:
-      rank = 4
-    else:
-      rank = 3
-    ranked.append((rank, index, name))
-  ranked.sort()
-  return [index for _, index, _ in ranked]
-
 
 def alert_gain_from_weighted_db(weighted_db: float, volume_base: float = VOLUME_BASE) -> float:
   """PCM gain from mic dB. A dead mic stays at full gain instead of the quiet floor."""
@@ -489,35 +465,54 @@ class Soundd:
     return alert_gain_from_weighted_db(weighted_db)
 
   def get_output_devices(self, sd):
-    # The default device throws on this comma. The first device that opens is not always the speaker.
     try:
       devices = list(sd.query_devices())
     except Exception:
       cloudlog.exception("soundd: failed to enumerate audio devices")
-      return []
+      return [None]
     order = output_device_order(devices)
+    cloudlog.info(f"soundd output devices: {describe_devices(devices)}")
     cloudlog.info("soundd output candidates: " + ", ".join(
-      f"{index}:{devices[index].get('name', '')}" for index in order
+      "default" if index is None else f"{index}:{devices[index].get('name', '')}" for index in order
     ))
     return order
 
   def enable_speaker_amp(self) -> None:
-    if HARDWARE.get_device_type() not in ("tici", "tizi"):
+    model = HARDWARE.get_device_type()
+    if model not in ("tici", "tizi"):
       return
     try:
-      from openpilot.system.hardware.tici.amplifier import Amplifier, speaker_outputs_enabled
-      ready, state = Amplifier().ensure_speakers_enabled(HARDWARE.get_device_type())
+      from openpilot.system.hardware.tici.amplifier import Amplifier, format_mismatches, format_registers
+      onroad = self.volume_params.get_bool("IsOnroad")
+      result = Amplifier().ensure_speakers_enabled(model, onroad=onroad)
     except Exception:
       cloudlog.exception("soundd: speaker amp check failed")
       return
-    if state is not None and speaker_outputs_enabled(**state):
-      cloudlog.info(f"soundd speaker amp already on: {state}")
-      return
-    cloudlog.error(f"soundd speaker amp was off: state={state} init_ok={ready}")
+    action = result["action"]
+    before = format_registers(result["before"])
+    if action == "on":
+      cloudlog.info(f"soundd speaker amp on: {before}")
+    elif action == "unreadable":
+      cloudlog.error("soundd speaker amp registers unreadable, leaving the amp alone")
+    elif action == "powersave":
+      cloudlog.info(f"soundd speaker amp in power save offroad, leaving it to hardwared: {before}")
+    else:
+      after_mismatches = result.get("mismatches_after")
+      still_wrong = "unreadable" if after_mismatches is None else format_mismatches(after_mismatches)
+      cloudlog.error(" ".join((
+        f"soundd speaker amp {action}: before={before}",
+        f"wrong={format_mismatches(result['mismatches'])}",
+        f"write_ok={result['write_ok']}",
+        f"after={format_registers(result['after'])}",
+        f"still_wrong={still_wrong}",
+      )))
 
-  @retry(attempts=10, delay=3)
   def start_stream(self, sd):
     self.enable_speaker_amp()
+    return self._open_stream(sd)
+
+  @retry(attempts=10, delay=3)
+  def _open_stream(self, sd):
     # reload sounddevice to reinitialize portaudio
     sd._terminate()
     sd._initialize()
@@ -536,14 +531,14 @@ class Soundd:
         stream.start()
         name = ""
         try:
-          name = sd.query_devices(device).get("name", "")
+          name = sd.query_devices(stream.device).get("name", "")
         except Exception:
           pass
         cloudlog.info(f"soundd stream started: {stream.samplerate=} {stream.channels=} {stream.dtype=} {stream.device=} {name=} {stream.blocksize=}")
         return stream
       except Exception as exc:
         last_error = exc
-        cloudlog.exception(f"soundd: failed to open output stream (device={device})")
+        cloudlog.exception(f"soundd: failed to open output stream (device={'default' if device is None else device})")
     raise last_error or RuntimeError("soundd: no output device")
 
   def describe_stream(self, stream) -> str:

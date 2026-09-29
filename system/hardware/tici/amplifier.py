@@ -99,11 +99,71 @@ CONFIGS = {
   ],
 }
 
-def speaker_outputs_enabled(shutdown: int, power: int, left: int, right: int) -> bool:
-  # Bit 7 set means the chip is out of shutdown. Speaker power is bits 5:4 of 0x4D.
-  operating = bool(shutdown & 0x80)
-  speakers_powered = (power & 0x30) == 0x30
-  return operating and speakers_powered and (left & 0xFF) != 0 and (right & 0xFF) != 0
+SHUTDOWN_REGISTER = 0x51
+
+# Registers on the DAI2 to speaker playback path: MCLK, PLL2, DAI2 format and port,
+# DAC input mixer, speaker mixers and gain, speaker volume, power management, shutdown.
+SPEAKER_PATH_REGISTERS = (0x10, 0x1A, 0x1C, 0x1E, 0x22, 0x2B, 0x2C, 0x2D, 0x3D, 0x3E, 0x4D, SHUTDOWN_REGISTER)
+
+
+def expected_register_bits(configs: list[AmpConfig]) -> dict[int, tuple[int, int]]:
+  """Fold configs in write order into {register: (mask, value)}. Later writes win on overlapping bits."""
+  expected: dict[int, tuple[int, int]] = {}
+  for config in configs:
+    mask = config.mask & 0xFF
+    value = (config.value << config.offset) & mask
+    old_mask, old_value = expected.get(config.register, (0, 0))
+    expected[config.register] = (old_mask | mask, (old_value & ~mask) | value)
+  return expected
+
+
+def speaker_path_expected(model: str) -> dict[int, tuple[int, int]]:
+  cfgs = [*BASE_CONFIG, *CONFIGS[model], AmpConfig("Global shutdown", 0b1, SHUTDOWN_REGISTER, 7, 0b10000000)]
+  expected = expected_register_bits(cfgs)
+  return {reg: expected[reg] for reg in SPEAKER_PATH_REGISTERS if reg in expected}
+
+
+def speaker_path_mismatches(model: str, registers: dict[int, int]) -> list[tuple[int, int, int, int | None]]:
+  """(register, mask, expected, actual) for every speaker path register that differs from the config."""
+  mismatches = []
+  for reg, (mask, value) in speaker_path_expected(model).items():
+    actual = registers.get(reg)
+    if actual is None or (actual & mask) != value:
+      mismatches.append((reg, mask, value, actual))
+  return mismatches
+
+
+def speaker_outputs_enabled(model: str, registers: dict[int, int]) -> bool:
+  return not speaker_path_mismatches(model, registers)
+
+
+def speaker_amp_action(model: str, registers: dict[int, int] | None, onroad: bool) -> str:
+  """What soundd may do about the amp. Never shuts the amp down on a failed read."""
+  if registers is None:
+    return "unreadable"
+  mismatches = speaker_path_mismatches(model, registers)
+  if not mismatches:
+    return "on"
+  in_shutdown = any(reg == SHUTDOWN_REGISTER for reg, *_ in mismatches)
+  if in_shutdown and not onroad:
+    # hardwared power save shuts the amp down offroad and reinitializes it when leaving power save.
+    return "powersave"
+  if in_shutdown and len(mismatches) == 1:
+    return "clear_shutdown"
+  return "initialize"
+
+
+def format_registers(registers: dict[int, int] | None) -> str:
+  if registers is None:
+    return "unreadable"
+  return " ".join(f"{reg:#04x}={value:#04x}" for reg, value in sorted(registers.items()))
+
+
+def format_mismatches(mismatches) -> str:
+  return " ".join(
+    f"{reg:#04x}&{mask:#04x}:want={value:#04x},got={'none' if actual is None else f'{actual & mask:#04x}'}"
+    for reg, mask, value, actual in mismatches
+  ) or "none"
 
 
 class Amplifier:
@@ -129,9 +189,8 @@ class Amplifier:
         if self.debug:
           print(f"  Changed {hex(config.register)}: {hex(old_value)} -> {hex(new_value)}")
 
-  def set_configs(self, configs: list[AmpConfig]) -> bool:
+  def set_configs(self, configs: list[AmpConfig], tries: int = 15) -> bool:
     # retry in case panda is using the amp
-    tries = 15
     backoff = 0.
     for i in range(tries):
       try:
@@ -143,35 +202,49 @@ class Amplifier:
         print(f"Failed to set amp config, {tries - i - 1} retries left")
     return False
 
-  def set_global_shutdown(self, amp_disabled: bool) -> bool:
-    return self.set_configs([self._get_shutdown_config(amp_disabled), ])
+  def set_global_shutdown(self, amp_disabled: bool, tries: int = 15) -> bool:
+    return self.set_configs([self._get_shutdown_config(amp_disabled), ], tries=tries)
 
-  def read_speaker_registers(self) -> dict[str, int] | None:
-    try:
-      with SMBus(self.AMP_I2C_BUS) as bus:
-        return {
-          "shutdown": bus.read_byte_data(self.AMP_ADDRESS, 0x51, force=True),
-          "power": bus.read_byte_data(self.AMP_ADDRESS, 0x4D, force=True),
-          "left": bus.read_byte_data(self.AMP_ADDRESS, 0x2B, force=True),
-          "right": bus.read_byte_data(self.AMP_ADDRESS, 0x2C, force=True),
-        }
-    except OSError:
-      return None
+  def read_registers(self, registers, tries: int = 3, delay: float = 0.02) -> dict[int, int] | None:
+    for _ in range(tries):
+      try:
+        with SMBus(self.AMP_I2C_BUS) as bus:
+          return {reg: bus.read_byte_data(self.AMP_ADDRESS, reg, force=True) for reg in registers}
+      except OSError:
+        time.sleep(delay)
+    return None
 
-  def ensure_speakers_enabled(self, model: str) -> tuple[bool, dict[str, int] | None]:
-    state = self.read_speaker_registers()
-    if state is not None and speaker_outputs_enabled(**state):
-      return True, state
-    return self.initialize_configuration(model), state
+  def read_speaker_registers(self) -> dict[int, int] | None:
+    return self.read_registers(SPEAKER_PATH_REGISTERS)
 
-  def initialize_configuration(self, model: str) -> bool:
+  def ensure_speakers_enabled(self, model: str, onroad: bool, tries: int = 2) -> dict:
+    """Check the speaker path and repair it only when the registers were read and are wrong."""
+    before = self.read_speaker_registers()
+    action = speaker_amp_action(model, before, onroad)
+    result = {"action": action, "before": before, "after": None, "write_ok": None,
+              "mismatches": speaker_path_mismatches(model, before) if before is not None else None}
+    if action == "clear_shutdown":
+      result["write_ok"] = self.set_global_shutdown(False, tries=tries)
+    elif action == "initialize":
+      result["write_ok"] = self.initialize_configuration(model, tries=tries)
+      if not result["write_ok"]:
+        # initialize_configuration sets shutdown first. Do not leave the amp shut down after a partial write.
+        self.set_global_shutdown(False, tries=tries)
+    else:
+      return result
+    after = self.read_speaker_registers()
+    result["after"] = after
+    result["mismatches_after"] = speaker_path_mismatches(model, after) if after is not None else None
+    return result
+
+  def initialize_configuration(self, model: str, tries: int = 15) -> bool:
     cfgs = [
       self._get_shutdown_config(True),
       *BASE_CONFIG,
       *CONFIGS[model],
       self._get_shutdown_config(False),
     ]
-    return self.set_configs(cfgs)
+    return self.set_configs(cfgs, tries=tries)
 
 
 if __name__ == "__main__":
