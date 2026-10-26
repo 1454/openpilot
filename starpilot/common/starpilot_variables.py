@@ -797,6 +797,7 @@ class StarPilotVariables:
 
     advanced_lateral_tuning = self.get_value("AdvancedLateralTune")
     toggle.lane_centering = self.get_value("LaneCentering")
+    toggle.sierra_lateral = self.get_value("SierraLateral")
     toggle.lane_centering_pause_on_signal = self.get_value(
       "LaneCenteringPauseOnSignal", condition=toggle.lane_centering, default=True,
     )

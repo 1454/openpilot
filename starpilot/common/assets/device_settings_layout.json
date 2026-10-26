@@ -286,6 +286,16 @@
         "settings_tier": "simple"
       },
       {
+        "key": "SierraLateral",
+        "label": "Sierra Lateral",
+        "description": "Silverado and Sierra only. Uses the batmobile steer ratio (17.6), center of gravity, and steering delay, turns off the center torque reduction, and raises the high-speed steering-angle cap from 3.0 to 3.5 m/s^2. Off keeps this branch's lateral tune.",
+        "picker_description": "Batmobile lateral tune and a higher high-speed steering angle for the Silverado and Sierra.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "LateralTune",
+        "settings_tier": "advanced"
+      },
+      {
         "key": "LateralTune",
         "label": "Lateral Tuning",
         "description": "Miscellaneous steering control changes to fine-tune how openpilot drives.",

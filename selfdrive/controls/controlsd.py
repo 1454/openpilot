@@ -19,6 +19,7 @@ from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR
 from opendbc.car.nissan.values import CAR as NISSAN_CAR
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.drive_helpers import (
+  MAX_LATERAL_ACCEL_NO_ROLL,
   MAX_LATERAL_JERK,
   clip_curvature,
   get_kona_non_scc_lateral_active,
@@ -31,7 +32,16 @@ from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle
 from openpilot.selfdrive.controls.lib.steering_saturation import is_angle_steering_limited
 from openpilot.selfdrive.controls.lib.latcontrol_curvature import LatControlCurvature
-from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import get_genesis_highway_command_stabilizer
+from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import (
+  SIERRA_ACTUATOR_DELAY,
+  SIERRA_CENTER_TO_FRONT_RATIO,
+  SIERRA_MAX_LATERAL_ACCEL,
+  SIERRA_MIN_STEER_SPEED,
+  SIERRA_STEER_RATIO,
+  get_genesis_highway_command_stabilizer,
+)
+from openpilot.starpilot.common.lateral_delay import full_lateral_delay
+from opendbc.car import scale_tire_stiffness
 from openpilot.selfdrive.controls.lib.latcontrol_torque import (
   BOLT_2018_2021_STEER_RATIO_TEST_SCALE,
   LatControlTorque,
@@ -466,6 +476,26 @@ class Controls:
         self.CP = messaging.log_from_bytes(self.params.get("CarParams"), car.CarParams)
         self.FPCP = messaging.log_from_bytes(self.params.get("StarPilotCarParams"), custom.StarPilotCarParams)
 
+  def _sierra_lateral_enabled(self):
+    if self.CP.carFingerprint not in (GM_CAR.CHEVROLET_SILVERADO, GM_CAR.CHEVROLET_SILVERADO_CC):
+      return False
+    return bool(getattr(self.starpilot_toggles, "sierra_lateral", False))
+
+  def _apply_sierra_vehicle_model(self, enabled):
+    if not hasattr(self, "_sierra_stock_geometry"):
+      self._sierra_stock_geometry = (self.VM.aF, self.VM.aR, self.VM.cF_orig, self.VM.cR_orig)
+    if enabled == getattr(self, "_sierra_geometry_enabled", False):
+      return
+    self._sierra_geometry_enabled = enabled
+    if not enabled:
+      self.VM.aF, self.VM.aR, self.VM.cF_orig, self.VM.cR_orig = self._sierra_stock_geometry
+      return
+    center_to_front = self.CP.wheelbase * SIERRA_CENTER_TO_FRONT_RATIO
+    self.VM.aF = center_to_front
+    self.VM.aR = self.CP.wheelbase - center_to_front
+    self.VM.cF_orig, self.VM.cR_orig = scale_tire_stiffness(
+      self.CP.mass, self.CP.wheelbase, center_to_front, self.CP.tireStiffnessFactor)
+
   def state_control(self):
     CS = self.sm['carState']
     self.twitch_guard_remaining = update_twitch_guard(self.twitch_guard_remaining, CS.vEgo, CS.standstill)
@@ -474,6 +504,10 @@ class Controls:
     lp = self.sm['liveParameters']
     x = max(lp.stiffnessFactor, 0.1)
     sr = max(lp.steerRatio, 0.1)
+    sierra_lateral = self._sierra_lateral_enabled()
+    self._apply_sierra_vehicle_model(sierra_lateral)
+    if sierra_lateral and not getattr(self.starpilot_toggles, "use_custom_steerRatio", False):
+      sr = SIERRA_STEER_RATIO
     custom_accord_ratio = getattr(self.starpilot_toggles, "steerRatio", self.CP.steerRatio)
     accord_ratio_is_explicit = getattr(self.starpilot_toggles, "use_custom_steerRatio", False) and \
       abs(custom_accord_ratio - self.CP.steerRatio) > 0.01
@@ -508,7 +542,8 @@ class Controls:
     CC.enabled = self.sm['selfdriveState'].enabled
 
     # Check which actuators can be enabled
-    standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
+    min_steer_speed = SIERRA_MIN_STEER_SPEED if sierra_lateral else self.CP.minSteerSpeed
+    standstill = abs(CS.vEgo) <= max(min_steer_speed, 0.3) or CS.standstill
     if self.CP.carFingerprint == HYUNDAI_CAR.HYUNDAI_KONA_NON_SCC:
       always_on_lateral_enabled = self.sm['starpilotCarState'].alwaysOnLateralEnabled
       CC.latActive = get_kona_non_scc_lateral_active(
@@ -794,10 +829,19 @@ class Controls:
           jerk_factor = self.lc_arrest_jerk_factor + rise_alpha * (jerk_factor - self.lc_arrest_jerk_factor)
       self.lc_arrest_jerk_factor = jerk_factor
 
+    lat_accel_factor = 1.0
+    report_lat_accel = None
+    if sierra_lateral:
+      lat_accel_factor = SIERRA_MAX_LATERAL_ACCEL / MAX_LATERAL_ACCEL_NO_ROLL
+      report_lat_accel = SIERRA_MAX_LATERAL_ACCEL
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll,
-                                                               jerk_factor)
+                                                               jerk_factor, lat_accel_factor, report_lat_accel)
     lat_smooth_seconds = get_control_lateral_smooth_seconds(self.CP.brand, CS.vEgo, self.CP.lateralSmoothSeconds)
     lat_delay = self.sm["liveDelay"].lateralDelay + lat_smooth_seconds
+    if sierra_lateral and not getattr(self.starpilot_toggles, "use_custom_steerActuatorDelay", False):
+      lat_delay = full_lateral_delay(SIERRA_ACTUATOR_DELAY) + lat_smooth_seconds
+    if hasattr(self, "CI"):
+      self.CI.sierra_siglin_scale = sierra_lateral
 
     actuators.curvature = self.desired_curvature
     steer, lateral_output, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,

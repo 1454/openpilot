@@ -118,6 +118,12 @@ class StarPilotLateralLayout(_SettingsPage):
     # ── 1. Steering Behavior ──
     self._behavior_rows = [
       SettingRow(
+        "SierraLateral", "toggle", tr_noop("Sierra Lateral"),
+        subtitle=tr_noop("Silverado and Sierra only. Uses the batmobile lateral set and allows more steering angle at speed."),
+        get_state=lambda: p.get_bool("SierraLateral"),
+        set_state=lambda s: p.put_bool("SierraLateral", s),
+      ),
+      SettingRow(
         "TeslaAOLDisengageOnBrake", "toggle", tr_noop("Disengage AOL on Brake"),
         subtitle=tr_noop("Keep steering off after pressing the brake until openpilot is engaged again."),
         get_state=lambda: p.get_bool("TeslaAOLDisengageOnBrake"),
