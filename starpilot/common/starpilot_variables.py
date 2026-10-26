@@ -1379,6 +1379,7 @@ class StarPilotVariables:
     if isinstance(lead_detection_probability, (int, float)) and lead_detection_probability > 1.0:
       lead_detection_probability = float(np.clip(lead_detection_probability * 0.01, 0.25, 0.5))
     toggle.lead_detection_probability = lead_detection_probability
+    toggle.lead_distance_velocity = self.get_value("LeadDistanceVelocity", condition=toggle.openpilot_longitudinal)
     toggle.recovery_power = self.get_value("RecoveryPower", cast=float, condition=longitudinal_tuning, default=1.0, min=0.5, max=2.0)
     toggle.taco_tune = self.get_value("TacoTune", condition=longitudinal_tuning)
 

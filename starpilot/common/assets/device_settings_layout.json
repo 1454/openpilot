@@ -1675,6 +1675,16 @@
         "settings_tier": "simple"
       },
       {
+        "key": "LeadDistanceVelocity",
+        "label": "Distance Lead Speed",
+        "description": "Estimate the lead car's speed from how its distance changes, instead of using the model's lead speed. Off keeps the stock model speed.",
+        "picker_description": "Derives lead speed from distance. Off uses the model speed.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "LongitudinalTune",
+        "settings_tier": "advanced"
+      },
+      {
         "key": "LeadDetectionThreshold",
         "label": "Lead Detection Sensitivity",
         "description": "How sensitive openpilot is to detecting vehicles. Higher sensitivity allows quicker detection at longer distances but may react to non-vehicle objects; lower sensitivity is more conservative and reduces false detections.",

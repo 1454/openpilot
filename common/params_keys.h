@@ -469,6 +469,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LateralTune", {PERSISTENT, BOOL, "1", "0", 1}},
     {"LeadDepartingAlert", {PERSISTENT, BOOL, "0", "0", 0, SETTINGS_SIMPLE}},
     {"LeadDetectionThreshold", {PERSISTENT, INT, "35", "50", 3}},
+    {"LeadDistanceVelocity", {PERSISTENT, BOOL, "0", "0", 3, SETTINGS_ADVANCED}},
     {"LeadIndicator", {PERSISTENT, BOOL, "0", "0", 2, SETTINGS_SIMPLE}},
     {"LeadInfo", {PERSISTENT, BOOL, "0", "0", 3}},
     {"LeadInfoMode", {PERSISTENT, INT, "2", "2", 3}},
