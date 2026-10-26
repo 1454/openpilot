@@ -11,6 +11,7 @@ from opendbc.car.gm.values import (
 )
 from opendbc.car.interfaces import CarControllerBase
 from openpilot.common.pid import PIDController
+from openpilot.selfdrive.controls.lib.gas_command import resolved_gas_model
 from openpilot.common.params import Params, UnknownKeyName
 from openpilot.starpilot.common.testing_grounds import testing_ground
 
@@ -574,6 +575,11 @@ class CarController(CarControllerBase):
     self.frontalArea = 1.05 * CP.wheelbase + 0.0679
     self.coeffDrag = 0.30
     self.airDensity = 1.225
+    self._stock_gas_mass = self.mass
+    self._stock_tire_radius = self.tireRadius
+    self._stock_coeff_drag = self.coeffDrag
+    self._stock_frontal_area = self.frontalArea
+    self._stock_air_density = self.airDensity
     self.malibu_cancel_phase = 0
     self.malibu_button_phase = 0
     self.malibu_last_button_ts_nanos = 0
@@ -1004,6 +1010,10 @@ class CarController(CarControllerBase):
     if self.CP.openpilotLongitudinalControl:
       # Gas/regen, brakes, and UI commands - all at 25Hz
       if self.frame % 4 == 0:
+        self.mass, self.tireRadius, self.coeffDrag, self.frontalArea, self.airDensity = resolved_gas_model(
+          self._stock_gas_mass, self._stock_tire_radius, self._stock_coeff_drag,
+          self._stock_frontal_area, self._stock_air_density, starpilot_toggles,
+        )
         stopping = actuators.longControlState == LongCtrlState.stopping
         interceptor_gas_cmd = 0
         at_full_stop = CC.longActive and CS.out.standstill

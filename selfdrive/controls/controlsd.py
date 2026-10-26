@@ -41,7 +41,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import (
   get_genesis_highway_command_stabilizer,
 )
 from openpilot.starpilot.common.lateral_delay import full_lateral_delay
-from opendbc.car import scale_tire_stiffness
+from opendbc.car import scale_rot_inertia, scale_tire_stiffness
 from openpilot.selfdrive.controls.lib.latcontrol_torque import (
   BOLT_2018_2021_STEER_RATIO_TEST_SCALE,
   LatControlTorque,
@@ -481,20 +481,40 @@ class Controls:
       return False
     return bool(getattr(self.starpilot_toggles, "sierra_lateral", False))
 
-  def _apply_sierra_vehicle_model(self, enabled):
-    if not hasattr(self, "_sierra_stock_geometry"):
-      self._sierra_stock_geometry = (self.VM.aF, self.VM.aR, self.VM.cF_orig, self.VM.cR_orig)
-    if enabled == getattr(self, "_sierra_geometry_enabled", False):
+  def _apply_vehicle_overrides(self):
+    if not hasattr(self, "_stock_vehicle_geometry"):
+      self._stock_vehicle_geometry = (
+        self.VM.m, self.VM.j, self.VM.aF, self.VM.aR, self.VM.cF_orig, self.VM.cR_orig,
+      )
+    stock_m, stock_j, stock_aF, stock_aR, stock_cF, stock_cR = self._stock_vehicle_geometry
+
+    ratio = float(getattr(self.starpilot_toggles, "center_to_front_ratio", 0.0) or 0.0)
+    if 0.2 < ratio < 0.9:
+      center = self.CP.wheelbase * ratio
+    elif self._sierra_lateral_enabled():
+      center = self.CP.wheelbase * SIERRA_CENTER_TO_FRONT_RATIO
+    else:
+      center = stock_aF
+
+    mass_override = float(getattr(self.starpilot_toggles, "gas_vehicle_mass_kg", 0.0) or 0.0)
+    mass = mass_override if 200.0 < mass_override < 20000.0 else stock_m
+    key = (round(center, 4), round(mass, 1))
+    if key == getattr(self, "_vehicle_override_key", None):
       return
-    self._sierra_geometry_enabled = enabled
-    if not enabled:
-      self.VM.aF, self.VM.aR, self.VM.cF_orig, self.VM.cR_orig = self._sierra_stock_geometry
+    self._vehicle_override_key = key
+
+    if abs(center - stock_aF) < 1e-4 and abs(mass - stock_m) < 0.5:
+      self.VM.m, self.VM.j = stock_m, stock_j
+      self.VM.aF, self.VM.aR = stock_aF, stock_aR
+      self.VM.cF_orig, self.VM.cR_orig = stock_cF, stock_cR
       return
-    center_to_front = self.CP.wheelbase * SIERRA_CENTER_TO_FRONT_RATIO
-    self.VM.aF = center_to_front
-    self.VM.aR = self.CP.wheelbase - center_to_front
+
+    self.VM.m = mass
+    self.VM.j = scale_rot_inertia(mass, self.CP.wheelbase)
+    self.VM.aF = center
+    self.VM.aR = self.CP.wheelbase - center
     self.VM.cF_orig, self.VM.cR_orig = scale_tire_stiffness(
-      self.CP.mass, self.CP.wheelbase, center_to_front, self.CP.tireStiffnessFactor)
+      mass, self.CP.wheelbase, center, self.CP.tireStiffnessFactor)
 
   def state_control(self):
     CS = self.sm['carState']
@@ -505,7 +525,7 @@ class Controls:
     x = max(lp.stiffnessFactor, 0.1)
     sr = max(lp.steerRatio, 0.1)
     sierra_lateral = self._sierra_lateral_enabled()
-    self._apply_sierra_vehicle_model(sierra_lateral)
+    self._apply_vehicle_overrides()
     if sierra_lateral and not getattr(self.starpilot_toggles, "use_custom_steerRatio", False):
       sr = SIERRA_STEER_RATIO
     custom_accord_ratio = getattr(self.starpilot_toggles, "steerRatio", self.CP.steerRatio)

@@ -43,6 +43,78 @@
         "data_type": "bool",
         "ui_type": "toggle",
         "settings_tier": "advanced"
+      },
+      {
+        "key": "GasTireRadius",
+        "label": "Tire Radius",
+        "description": "Wheel radius used to turn acceleration into the gas torque command, in meters. 0 keeps the stock estimate from the wheelbase.",
+        "picker_description": "Wheel radius in the gas torque command.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 0.6,
+        "step": 0.001,
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "CenterToFrontRatio",
+        "label": "Center to Front",
+        "description": "Fraction of the wheelbase from the front axle to the center of gravity. 0 keeps stock, or 0.75 while Sierra Lateral is on.",
+        "picker_description": "Center of gravity as a fraction of the wheelbase.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 0.8,
+        "step": 0.01,
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "GasVehicleWeight",
+        "label": "Weight",
+        "description": "Vehicle weight used in the gas torque command, in pounds. 0 keeps the car's current mass, including the usual cargo allowance.",
+        "picker_description": "Weight used to turn acceleration into gas torque.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 15000.0,
+        "step": 10.0,
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "GasDragCoeff",
+        "label": "Drag Coefficient",
+        "description": "Cd in the gas torque command. 0 keeps the stock 0.30.",
+        "picker_description": "Aerodynamic drag coefficient in the gas torque command.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 0.8,
+        "step": 0.01,
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "GasFrontalArea",
+        "label": "Frontal Area",
+        "description": "Frontal area in the gas torque command, in square meters. 0 keeps the stock estimate from the wheelbase.",
+        "picker_description": "Frontal area in the gas torque command.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 6.5,
+        "step": 0.01,
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "GasAirDensity",
+        "label": "Air Density",
+        "description": "Air density in the gas torque command, in kg/m³. 0 keeps the stock 1.225.",
+        "picker_description": "Air density in the gas torque command.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 1.4,
+        "step": 0.005,
+        "settings_tier": "advanced"
       }
     ]
   },
