@@ -14,6 +14,39 @@
     ]
   },
   {
+    "name": "Added Controls",
+    "icon": "bi-toggles",
+    "params": [
+      {
+        "key": "EndDriverMonitoring",
+        "label": "End Driver Monitoring",
+        "description": "On stops driver monitoring alerts and stops comma uploads. Off restores driver monitoring and restarts uploads.",
+        "picker_description": "Stops driver monitoring and comma uploads.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "settings_tier": "simple"
+      },
+      {
+        "key": "LeadDistanceVelocity",
+        "label": "Distance Lead Speed",
+        "description": "Estimate the lead car's speed from how its distance changes, instead of using the model's lead speed. Off keeps the stock model speed.",
+        "picker_description": "Derives lead speed from distance. Off uses the model speed.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "SierraLateral",
+        "label": "Sierra Lateral",
+        "description": "Silverado and Sierra only. Uses the batmobile steer ratio (17.6), center of gravity, and steering delay, turns off the center torque reduction, and raises the high-speed steering-angle cap from 3.0 to 3.5 m/s^2. Off keeps this branch's lateral tune.",
+        "picker_description": "Batmobile lateral tune and a higher high-speed steering angle for the Silverado and Sierra.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "settings_tier": "advanced"
+      }
+    ]
+  },
+  {
     "name": "Lateral (Steering)",
     "icon": "bi-arrows-move",
     "params": [
@@ -284,16 +317,6 @@
         "step": 0.05,
         "parent_key": "LaneChanges",
         "settings_tier": "simple"
-      },
-      {
-        "key": "SierraLateral",
-        "label": "Sierra Lateral",
-        "description": "Silverado and Sierra only. Uses the batmobile steer ratio (17.6), center of gravity, and steering delay, turns off the center torque reduction, and raises the high-speed steering-angle cap from 3.0 to 3.5 m/s^2. Off keeps this branch's lateral tune.",
-        "picker_description": "Batmobile lateral tune and a higher high-speed steering angle for the Silverado and Sierra.",
-        "data_type": "bool",
-        "ui_type": "toggle",
-        "parent_key": "LateralTune",
-        "settings_tier": "advanced"
       },
       {
         "key": "LateralTune",
@@ -1683,16 +1706,6 @@
         "ui_type": "toggle",
         "parent_key": "LongitudinalTune",
         "settings_tier": "simple"
-      },
-      {
-        "key": "LeadDistanceVelocity",
-        "label": "Distance Lead Speed",
-        "description": "Estimate the lead car's speed from how its distance changes, instead of using the model's lead speed. Off keeps the stock model speed.",
-        "picker_description": "Derives lead speed from distance. Off uses the model speed.",
-        "data_type": "bool",
-        "ui_type": "toggle",
-        "parent_key": "LongitudinalTune",
-        "settings_tier": "advanced"
       },
       {
         "key": "LeadDetectionThreshold",
@@ -4639,7 +4652,7 @@
       {
         "key": "NoUploads",
         "label": "Disable Uploads",
-        "description": "WARNING: This will prevent your drives from being uploaded to comma connect which will impact debugging and official support from comma!\n\nPrevent the device from uploading driving data.",
+        "description": "WARNING: This will prevent your drives from being uploaded to comma connect which will impact debugging and official support from comma!\n\nThis is the same switch as End Driver Monitoring. On stops uploads and driver monitoring. Off restores driver monitoring and restarts uploads.",
         "picker_description": "Prevents drives from uploading to comma connect.",
         "data_type": "bool",
         "ui_type": "toggle",

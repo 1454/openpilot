@@ -36,6 +36,8 @@ def dmonitoringd_thread():
       # iterate when model has new output
       continue
 
+    DM.monitoring_ended = params.get_bool("EndDriverMonitoring")
+
     valid = sm.all_checks()
     if demo_mode and sm.valid['driverStateV2']:
       DM.run_step(sm, demo=True)

@@ -548,6 +548,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NNFFModelName", {CLEAR_ON_MANAGER_START, STRING, "", "", 0}},
     {"NoLogging", {PERSISTENT, BOOL, "0", "0", 2, SETTINGS_SIMPLE}},
     {"NoUploads", {PERSISTENT, BOOL, "1", "0", 2, SETTINGS_SIMPLE}},
+    {"EndDriverMonitoring", {PERSISTENT, BOOL, "1", "0", 2, SETTINGS_SIMPLE}},
     {"CommaUploadsNerfed", {PERSISTENT, BOOL, "0", "0"}},
     {"NudgelessLaneChange", {PERSISTENT, BOOL, "0", "0", 0, SETTINGS_SIMPLE}},
     {"NudgelessLaneChangeOnlyWhenEngaged", {PERSISTENT, BOOL, "0", "0", 1, SETTINGS_SIMPLE}},

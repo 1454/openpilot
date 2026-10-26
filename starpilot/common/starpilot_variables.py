@@ -431,6 +431,20 @@ def migrate_comma_uploads_off(params: Params | None = None) -> bool:
   return True
 
 
+def sync_driver_monitoring_uploads(params: Params | None = None) -> bool:
+  """Keep comma uploads tied to End Driver Monitoring.
+
+  On stops uploads. Off restarts them, including when NoUploads was left on.
+  """
+  params = params or Params(return_defaults=True)
+  ended = params.get_bool("EndDriverMonitoring")
+  if params.get_bool("NoUploads") == ended:
+    return False
+
+  params.put_bool("NoUploads", ended)
+  return True
+
+
 def migrate_aol_lkas_to_button_control(params: Params | None = None) -> bool:
   params = params or Params(return_defaults=True)
   if params.get_bool(AOL_LKAS_MIGRATION_KEY):
@@ -475,6 +489,7 @@ class StarPilotVariables:
     migrate_cancel_button_controls(self.params)
     migrate_aol_lkas_to_button_control(self.params)
     migrate_comma_uploads_off(self.params)
+    sync_driver_monitoring_uploads(self.params)
 
     self.starpilot_toggles = SimpleNamespace()
     toggle = self.starpilot_toggles
@@ -1072,9 +1087,11 @@ class StarPilotVariables:
     # Keep force-onroad desktop simulations from polluting logs, but never disable
     # loggerd/encoderd on real devices because that breaks route continuity/uploads.
     toggle.no_logging = self.get_value("NoLogging", condition=device_management and not self.vetting_branch) or (toggle.force_onroad and HARDWARE.get_device_type() == "pc")
-    # Follow the param on every branch. The default and the one-time migration both leave uploads off.
-    toggle.no_uploads = self.get_value("NoUploads")
-    toggle.no_onroad_uploads = self.get_value("DisableOnroadUploads", condition=toggle.no_uploads)
+    # End Driver Monitoring is the upload switch. On stops uploads completely.
+    # Off restarts them. AlwaysAllowUploads still overrides a stop.
+    toggle.end_driver_monitoring = self.get_value("EndDriverMonitoring")
+    toggle.no_uploads = bool(toggle.end_driver_monitoring)
+    toggle.no_onroad_uploads = False
 
     toggle.nostalgia_mode = self.get_value("NostalgiaMode", condition=toggle.openpilot_longitudinal and toggle.car_model == HYUNDAI_CAR.HYUNDAI_IONIQ_6)
     toggle.remap_cancel_to_distance = self.get_value(
