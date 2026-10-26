@@ -555,6 +555,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"GasDragCoeff", {PERSISTENT, FLOAT, "0", "0", 3, SETTINGS_ADVANCED}},
     {"GasFrontalArea", {PERSISTENT, FLOAT, "0", "0", 3, SETTINGS_ADVANCED}},
     {"GasAirDensity", {PERSISTENT, FLOAT, "0", "0", 3, SETTINGS_ADVANCED}},
+    {"GasGradeGain", {PERSISTENT, FLOAT, "100", "100", 3, SETTINGS_ADVANCED}},
+    {"GasGradeUphillCap", {PERSISTENT, FLOAT, "0.2", "0.2", 3, SETTINGS_ADVANCED}},
     {"CommaUploadsNerfed", {PERSISTENT, BOOL, "0", "0"}},
     {"NudgelessLaneChange", {PERSISTENT, BOOL, "0", "0", 0, SETTINGS_SIMPLE}},
     {"NudgelessLaneChangeOnlyWhenEngaged", {PERSISTENT, BOOL, "0", "0", 1, SETTINGS_SIMPLE}},

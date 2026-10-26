@@ -822,6 +822,8 @@ class StarPilotVariables:
     toggle.gas_drag_coeff = self.get_value("GasDragCoeff", cast=float, default=0.0, min=0.0, max=1.5)
     toggle.gas_frontal_area = self.get_value("GasFrontalArea", cast=float, default=0.0, min=0.0, max=12.0)
     toggle.gas_air_density = self.get_value("GasAirDensity", cast=float, default=0.0, min=0.0, max=2.0)
+    toggle.gas_grade_gain = self.get_value("GasGradeGain", cast=float, default=100.0, conversion=0.01, min=0.0, max=2.0)
+    toggle.gas_grade_uphill_cap = self.get_value("GasGradeUphillCap", cast=float, default=0.2, min=0.0, max=1.0)
     toggle.lane_centering_pause_on_signal = self.get_value(
       "LaneCenteringPauseOnSignal", condition=toggle.lane_centering, default=True,
     )

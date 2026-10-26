@@ -114,6 +114,24 @@ class StarPilotAddedLayout(_SettingsPage):
           current_value=self._effective_density(), title=tr_noop("Air Density"),
         ),
       ),
+      SettingRow(
+        "GasGradeGain", "value", tr_noop("Grade Strength"),
+        subtitle=tr_noop("How much of the hill pitch is added to the gas command. 100% is stock, 0% ignores hills."),
+        get_value=lambda: f"{self._grade_gain():.0f}%",
+        on_click=lambda: self._show_slider(
+          "GasGradeGain", 0, 200, step=5, unit="%", value_type="float",
+          current_value=self._grade_gain(), title=tr_noop("Grade Strength"),
+        ),
+      ),
+      SettingRow(
+        "GasGradeUphillCap", "value", tr_noop("Uphill Grade Cap"),
+        subtitle=tr_noop("Most extra acceleration the uphill term can add. Stock is 0.20 m/s². Downhill help is not capped."),
+        get_value=lambda: f"{self._grade_cap():.2f} m/s²",
+        on_click=lambda: self._show_slider(
+          "GasGradeUphillCap", 0.0, 1.0, step=0.01, unit=" m/s²", value_type="float",
+          current_value=self._grade_cap(), title=tr_noop("Uphill Grade Cap"),
+        ),
+      ),
     ]
     self._manager_view = AetherSettingsView(
       self,
@@ -220,3 +238,9 @@ class StarPilotAddedLayout(_SettingsPage):
 
   def _density_label(self) -> str:
     return f"{self._effective_density():.3f}"
+
+  def _grade_gain(self) -> float:
+    return float(self._params.get_float("GasGradeGain"))
+
+  def _grade_cap(self) -> float:
+    return float(self._params.get_float("GasGradeUphillCap"))

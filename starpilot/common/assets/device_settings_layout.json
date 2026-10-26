@@ -115,6 +115,30 @@
         "max": 1.4,
         "step": 0.005,
         "settings_tier": "advanced"
+      },
+      {
+        "key": "GasGradeGain",
+        "label": "Grade Strength",
+        "description": "Percent of the hill pitch added to the gas command. 100 is stock, 0 ignores hills.",
+        "picker_description": "How strongly hills change the gas command.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 200.0,
+        "step": 5.0,
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "GasGradeUphillCap",
+        "label": "Uphill Grade Cap",
+        "description": "Most extra acceleration the uphill term can add, in m/s². Stock is 0.20. Downhill help is not capped.",
+        "picker_description": "Limit on the uphill grade term.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 1.0,
+        "step": 0.01,
+        "settings_tier": "advanced"
       }
     ]
   },
