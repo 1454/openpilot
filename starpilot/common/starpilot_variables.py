@@ -197,6 +197,7 @@ CANCEL_BUTTON_MAPPINGS = (
 )
 
 AOL_LKAS_MIGRATION_KEY = "AOLLKASMigratedToButtonControl"
+COMMA_UPLOADS_NERFED_KEY = "CommaUploadsNerfed"
 FORD_LKAS_MIGRATION_KEY = "FordLKASButtonControlMigrated"
 SONATA_HYBRID_LKAS_MIGRATION_KEY = "SonataHybridLKASButtonControlMigrated"
 
@@ -420,6 +421,16 @@ def migrate_cancel_button_controls(params: Params | None = None) -> bool:
   return True
 
 
+def migrate_comma_uploads_off(params: Params | None = None) -> bool:
+  params = params or Params(return_defaults=True)
+  if params.get_bool(COMMA_UPLOADS_NERFED_KEY):
+    return False
+
+  params.put_bool("NoUploads", True)
+  params.put_bool(COMMA_UPLOADS_NERFED_KEY, True)
+  return True
+
+
 def migrate_aol_lkas_to_button_control(params: Params | None = None) -> bool:
   params = params or Params(return_defaults=True)
   if params.get_bool(AOL_LKAS_MIGRATION_KEY):
@@ -463,6 +474,7 @@ class StarPilotVariables:
     self.params_memory = Params(memory=True)
     migrate_cancel_button_controls(self.params)
     migrate_aol_lkas_to_button_control(self.params)
+    migrate_comma_uploads_off(self.params)
 
     self.starpilot_toggles = SimpleNamespace()
     toggle = self.starpilot_toggles
@@ -1059,7 +1071,8 @@ class StarPilotVariables:
     # Keep force-onroad desktop simulations from polluting logs, but never disable
     # loggerd/encoderd on real devices because that breaks route continuity/uploads.
     toggle.no_logging = self.get_value("NoLogging", condition=device_management and not self.vetting_branch) or (toggle.force_onroad and HARDWARE.get_device_type() == "pc")
-    toggle.no_uploads = self.get_value("NoUploads", condition=device_management and not self.vetting_branch)
+    # Follow the param on every branch. The default and the one-time migration both leave uploads off.
+    toggle.no_uploads = self.get_value("NoUploads")
     toggle.no_onroad_uploads = self.get_value("DisableOnroadUploads", condition=toggle.no_uploads)
 
     toggle.nostalgia_mode = self.get_value("NostalgiaMode", condition=toggle.openpilot_longitudinal and toggle.car_model == HYUNDAI_CAR.HYUNDAI_IONIQ_6)

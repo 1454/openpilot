@@ -48,15 +48,17 @@ class DRIVER_MONITOR_SETTINGS:
     # https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=OJ:L_202501899
     self._ALERT_MIN_SPEED = 2.8  # 10 km/h
 
-    self._WHEELTOUCH_POLICY_ALERT_1_TIMEOUT = 5.
-    self._WHEELTOUCH_POLICY_ALERT_2_TIMEOUT = 15.
-    self._WHEELTOUCH_POLICY_ALERT_3_TIMEOUT = 25.
-    self._VISION_POLICY_ALERT_1_TIMEOUT = 5.
-    self._VISION_POLICY_ALERT_2_TIMEOUT = 8.
-    self._VISION_POLICY_ALERT_3_TIMEOUT = 13.
+    # StarPilot: stretched so a glance or a short look-away does not escalate.
+    # A sustained distraction still reaches red and then lockout.
+    self._WHEELTOUCH_POLICY_ALERT_1_TIMEOUT = 30.
+    self._WHEELTOUCH_POLICY_ALERT_2_TIMEOUT = 75.
+    self._WHEELTOUCH_POLICY_ALERT_3_TIMEOUT = 120.
+    self._VISION_POLICY_ALERT_1_TIMEOUT = 20.
+    self._VISION_POLICY_ALERT_2_TIMEOUT = 45.
+    self._VISION_POLICY_ALERT_3_TIMEOUT = 90.
 
     # no response = alert_3 sustained for certain amount of time
-    self._NO_RESPONSE_TIMEOUT = 5.
+    self._NO_RESPONSE_TIMEOUT = 30.
 
     # lockout specs
     self._MAX_ALERT_3 = 2
@@ -70,18 +72,18 @@ class DRIVER_MONITOR_SETTINGS:
     self._EYE_THRESHOLD = 0.65
     self._SG_THRESHOLD = 0.9
     self._BLINK_THRESHOLD = 0.865
-    self._PHONE_THRESH = 0.5
-    self._POSE_PITCH_THRESHOLD = 0.3133
-    self._POSE_PITCH_THRESHOLD_SLACK = 0.3237
+    self._PHONE_THRESH = 0.8
+    self._POSE_PITCH_THRESHOLD = 0.47
+    self._POSE_PITCH_THRESHOLD_SLACK = 0.55
     self._POSE_PITCH_THRESHOLD_STRICT = self._POSE_PITCH_THRESHOLD
-    self._POSE_YAW_THRESHOLD = 0.4020
-    self._POSE_YAW_THRESHOLD_SLACK = 0.5042
+    self._POSE_YAW_THRESHOLD = 0.60
+    self._POSE_YAW_THRESHOLD_SLACK = 0.75
     self._POSE_YAW_THRESHOLD_STRICT = self._POSE_YAW_THRESHOLD
     self._POSE_YAW_MIN_STEER_DEG = 30
     self._POSE_YAW_STEER_FACTOR = 0.15
     self._POSE_YAW_STEER_MAX_OFFSET = 0.3927
     self._PITCH_NATURAL_OFFSET = 0.011 # initial value before offset is learned
-    self._PITCH_NATURAL_THRESHOLD = 0.449
+    self._PITCH_NATURAL_THRESHOLD = 0.65
     self._YAW_NATURAL_OFFSET = 0.075 # initial value before offset is learned
     self._PITCH_NATURAL_VAR = 3*0.01
     self._YAW_NATURAL_VAR = 3*0.05

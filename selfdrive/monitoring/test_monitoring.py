@@ -7,7 +7,7 @@ from openpilot.selfdrive.monitoring.policy import DriverMonitoring, DRIVER_MONIT
 EventName = log.OnroadEvent.EventName
 dm_settings = DRIVER_MONITOR_SETTINGS()
 
-TEST_TIMESPAN = 120  # seconds
+TEST_TIMESPAN = 200  # seconds, longer than the stretched red alert plus no-response window
 DISTRACTED_SECONDS_TO_ORANGE = dm_settings._VISION_POLICY_ALERT_2_TIMEOUT + 1
 DISTRACTED_SECONDS_TO_RED = dm_settings._VISION_POLICY_ALERT_3_TIMEOUT + 1
 INVISIBLE_SECONDS_TO_ORANGE = dm_settings._WHEELTOUCH_POLICY_ALERT_2_TIMEOUT + 1
