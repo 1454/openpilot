@@ -138,6 +138,21 @@ def test_source_selection(controller_factory, priority1, priority2, highest, low
   assert controller.target == pytest.approx(mph(expected_speed))
 
 
+@pytest.mark.parametrize(("vision", "expected_source", "expected_speed"), [
+  (45, SOURCE_MAP, 55),
+  (35, SOURCE_MAP, 55),
+  (46, SOURCE_VISION, 46),
+  (65, SOURCE_VISION, 65),
+])
+def test_vision_defers_to_map_when_10_mph_or_more_below(controller_factory, vision, expected_source, expected_speed):
+  controller = controller_factory(
+    speed_limit_priority1=SOURCE_VISION, speed_limit_priority2=SOURCE_MAP, vision_speed_limit_detection=True,
+  )
+  step(controller, map_limit=mph(55), way=custom.WaySelectionType.current, vision=mph(vision), cruise=mph(vision))
+  assert controller.source == expected_source
+  assert controller.target == pytest.approx(mph(expected_speed))
+
+
 def test_vision_only_participates_when_configured(controller_factory):
   controller = controller_factory(vision_speed_limit_detection=True)
   step(controller, vision=mph(45), cruise=mph(45))
