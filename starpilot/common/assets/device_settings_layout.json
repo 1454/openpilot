@@ -14,6 +14,135 @@
     ]
   },
   {
+    "name": "Added Controls",
+    "icon": "bi-toggles",
+    "params": [
+      {
+        "key": "EndDriverMonitoring",
+        "label": "End Driver Monitoring",
+        "description": "On stops driver monitoring alerts and stops comma uploads. Off restores driver monitoring and restarts uploads.",
+        "picker_description": "Stops driver monitoring and comma uploads.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "settings_tier": "simple"
+      },
+      {
+        "key": "LeadDistanceVelocity",
+        "label": "Distance Lead Speed",
+        "description": "Estimate the lead car's speed from how its distance changes, instead of using the model's lead speed. Off keeps the stock model speed.",
+        "picker_description": "Derives lead speed from distance. Off uses the model speed.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "SierraLateral",
+        "label": "Sierra Lateral",
+        "description": "Silverado and Sierra only. Uses the batmobile steer ratio (17.6), center of gravity, and steering delay, turns off the center torque reduction, and raises the high-speed steering-angle cap from 3.0 to 3.5 m/s^2. Off keeps this branch's lateral tune.",
+        "picker_description": "Batmobile lateral tune and a higher high-speed steering angle for the Silverado and Sierra.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "GasTireRadius",
+        "label": "Tire Radius",
+        "description": "Wheel radius used to turn acceleration into the gas torque command, in meters. 0 keeps the stock estimate from the wheelbase.",
+        "picker_description": "Wheel radius in the gas torque command.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 0.6,
+        "step": 0.001,
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "CenterToFrontRatio",
+        "label": "Center to Front",
+        "description": "Fraction of the wheelbase from the front axle to the center of gravity. 0 keeps stock, or 0.75 while Sierra Lateral is on.",
+        "picker_description": "Center of gravity as a fraction of the wheelbase.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 0.8,
+        "step": 0.01,
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "GasVehicleWeight",
+        "label": "Weight",
+        "description": "Vehicle weight used in the gas torque command, in pounds. 0 keeps the car's current mass, including the usual cargo allowance.",
+        "picker_description": "Weight used to turn acceleration into gas torque.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 15000.0,
+        "step": 10.0,
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "GasDragCoeff",
+        "label": "Drag Coefficient",
+        "description": "Cd in the gas torque command. 0 keeps the stock value: 0.38 on the Silverado, 0.30 on other cars.",
+        "picker_description": "Aerodynamic drag coefficient in the gas torque command.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 0.8,
+        "step": 0.01,
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "GasFrontalArea",
+        "label": "Frontal Area",
+        "description": "Frontal area in the gas torque command, in square meters. 0 keeps the stock value: 3.4 on the Silverado, a wheelbase estimate on other cars.",
+        "picker_description": "Frontal area in the gas torque command.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 6.5,
+        "step": 0.01,
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "GasAirDensity",
+        "label": "Air Density",
+        "description": "Air density in the gas torque command, in kg/m³. 0 keeps the stock 1.225.",
+        "picker_description": "Air density in the gas torque command.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 1.4,
+        "step": 0.005,
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "GasGradeGain",
+        "label": "Grade Strength",
+        "description": "Percent of the hill pitch added to the gas command. 100 is stock, 0 ignores hills.",
+        "picker_description": "How strongly hills change the gas command.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 200.0,
+        "step": 5.0,
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "GasGradeUphillCap",
+        "label": "Uphill Grade Cap",
+        "description": "Most extra acceleration the uphill term can add, in m/s². Stock is 0.20. Downhill help is not capped.",
+        "picker_description": "Limit on the uphill grade term.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 1.0,
+        "step": 0.01,
+        "settings_tier": "advanced"
+      }
+    ]
+  },
+  {
     "name": "Lateral (Steering)",
     "icon": "bi-arrows-move",
     "params": [
@@ -4619,7 +4748,7 @@
       {
         "key": "NoUploads",
         "label": "Disable Uploads",
-        "description": "WARNING: This will prevent your drives from being uploaded to comma connect which will impact debugging and official support from comma!\n\nPrevent the device from uploading driving data.",
+        "description": "WARNING: This will prevent your drives from being uploaded to comma connect which will impact debugging and official support from comma!\n\nThis is the same switch as End Driver Monitoring. On stops uploads and driver monitoring. Off restores driver monitoring and restarts uploads.",
         "picker_description": "Prevents drives from uploading to comma connect.",
         "data_type": "bool",
         "ui_type": "toggle",

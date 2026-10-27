@@ -272,7 +272,7 @@ class SystemSettingsManagerView(PanelManagerView):
       },
       {
         "title": tr("Disable Uploads"),
-        "subtitle": "",
+        "subtitle": tr("Also ends driver monitoring. Off restores monitoring and restarts uploads."),
         "get_state": lambda: self._controller._params.get_bool("NoUploads"),
         "set_state": self._controller._on_no_uploads_toggle,
       },
@@ -1029,15 +1029,20 @@ class StarPilotSystemLayout(_SettingsPage):
       )
     )
 
+  def _apply_upload_block(self, blocked: bool):
+    # The same switch ends driver monitoring. Off restores monitoring and uploads.
+    self._params.put_bool("EndDriverMonitoring", blocked)
+    self._params.put_bool("NoUploads", blocked)
+
   def _on_no_uploads_toggle(self, state):
     if state:
       gui_app.push_widget(ConfirmDialog(
-        tr("This will prevent your drives from being uploaded to comma connect which may impact receiving support. Are you sure?"),
+        tr("This stops comma uploads and driver monitoring. Off restores driver monitoring and restarts uploads. Are you sure?"),
         tr("Disable"),
-        callback=lambda res: self._params.put_bool("NoUploads", True) if res == DialogResult.CONFIRM else None,
+        callback=lambda res: self._apply_upload_block(True) if res == DialogResult.CONFIRM else None,
       ))
     else:
-      self._params.put_bool("NoUploads", False)
+      self._apply_upload_block(False)
 
   def _on_no_logging_toggle(self, state):
     if state:

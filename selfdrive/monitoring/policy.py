@@ -148,7 +148,7 @@ def face_orientation_from_model(orient_model, pos_model, rpy_calib):
 
 
 class DriverMonitoring:
-  def __init__(self, rhd_saved=False, settings=None, always_on=False, rhd_override=None):
+  def __init__(self, rhd_saved=False, settings=None, always_on=False, rhd_override=None, monitoring_ended=False):
     # init policy settings
     self.settings = settings if settings is not None else DRIVER_MONITOR_SETTINGS()
 
@@ -161,6 +161,8 @@ class DriverMonitoring:
 
     self.alert_level = AlertLevel.none
     self.always_on = always_on
+    self.monitoring_ended = monitoring_ended
+    self._monitoring_end_applied = False
     self.distracted_types = defaultdict(bool)
     self.driver_distracted = False
     self.driver_distraction_filter = FirstOrderFilter(0., self.settings._DISTRACTED_FILTER_TS, DT_DMON)
@@ -330,7 +332,27 @@ class DriverMonitoring:
     elif self.face_detected and self.pose.low_std:
       self.hi_stds = 0
 
+  def _end_monitoring(self):
+    # Stop alerts and lockout. Awareness is held full so a later resume starts clean.
+    if not self._monitoring_end_applied:
+      Params().remove("DriverTooDistracted")
+      self._monitoring_end_applied = True
+    self._reset_awareness()
+    self.alert_level = AlertLevel.none
+    self.lockout_active = False
+    self.driver_distracted = False
+    self.alert_3_cnt = 0
+    self.cnt_since_alert_3 = 0
+    self.no_response_cnt = 0
+    self.lockout_time_elapsed = 0
+    self.step_change = 0.
+
   def _update_events(self, driver_engaged, op_engaged, lowspeed, wrong_gear):
+    if self.monitoring_ended:
+      self._end_monitoring()
+      return
+
+    self._monitoring_end_applied = False
     self.alert_level = AlertLevel.none
     self.driver_interacting = driver_engaged
 
@@ -404,6 +426,9 @@ class DriverMonitoring:
         self.alert_level = AlertLevel.one
 
   def get_state_packet(self, valid=True):
+    if self.monitoring_ended:
+      self._end_monitoring()
+
     # build driverMonitoringState packet
     dat = messaging.new_message('driverMonitoringState', valid=valid)
     dm = dat.driverMonitoringState

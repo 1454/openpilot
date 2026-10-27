@@ -420,6 +420,20 @@ def migrate_cancel_button_controls(params: Params | None = None) -> bool:
   return True
 
 
+def sync_driver_monitoring_uploads(params: Params | None = None) -> bool:
+  """Keep comma uploads tied to End Driver Monitoring.
+
+  On stops uploads. Off restarts them, including when NoUploads was left on.
+  """
+  params = params or Params(return_defaults=True)
+  ended = params.get_bool("EndDriverMonitoring")
+  if params.get_bool("NoUploads") == ended:
+    return False
+
+  params.put_bool("NoUploads", ended)
+  return True
+
+
 def migrate_aol_lkas_to_button_control(params: Params | None = None) -> bool:
   params = params or Params(return_defaults=True)
   if params.get_bool(AOL_LKAS_MIGRATION_KEY):
@@ -463,6 +477,7 @@ class StarPilotVariables:
     self.params_memory = Params(memory=True)
     migrate_cancel_button_controls(self.params)
     migrate_aol_lkas_to_button_control(self.params)
+    sync_driver_monitoring_uploads(self.params)
 
     self.starpilot_toggles = SimpleNamespace()
     toggle = self.starpilot_toggles
@@ -785,6 +800,18 @@ class StarPilotVariables:
 
     advanced_lateral_tuning = self.get_value("AdvancedLateralTune")
     toggle.lane_centering = self.get_value("LaneCentering")
+    toggle.sierra_lateral = self.get_value("SierraLateral")
+    # 0 keeps the car's stock value. Weight is entered in pounds.
+    toggle.gas_tire_radius = self.get_value("GasTireRadius", cast=float, default=0.0, min=0.0, max=0.8)
+    toggle.center_to_front_ratio = self.get_value("CenterToFrontRatio", cast=float, default=0.0, min=0.0, max=0.9)
+    toggle.gas_vehicle_mass_kg = self.get_value(
+      "GasVehicleWeight", cast=float, default=0.0, conversion=CV.LB_TO_KG, min=0.0, max=20000.0 * CV.LB_TO_KG,
+    )
+    toggle.gas_drag_coeff = self.get_value("GasDragCoeff", cast=float, default=0.0, min=0.0, max=1.5)
+    toggle.gas_frontal_area = self.get_value("GasFrontalArea", cast=float, default=0.0, min=0.0, max=12.0)
+    toggle.gas_air_density = self.get_value("GasAirDensity", cast=float, default=0.0, min=0.0, max=2.0)
+    toggle.gas_grade_gain = self.get_value("GasGradeGain", cast=float, default=100.0, conversion=0.01, min=0.0, max=2.0)
+    toggle.gas_grade_uphill_cap = self.get_value("GasGradeUphillCap", cast=float, default=0.2, min=0.0, max=1.0)
     toggle.lane_centering_pause_on_signal = self.get_value(
       "LaneCenteringPauseOnSignal", condition=toggle.lane_centering, default=True,
     )
@@ -1059,8 +1086,11 @@ class StarPilotVariables:
     # Keep force-onroad desktop simulations from polluting logs, but never disable
     # loggerd/encoderd on real devices because that breaks route continuity/uploads.
     toggle.no_logging = self.get_value("NoLogging", condition=device_management and not self.vetting_branch) or (toggle.force_onroad and HARDWARE.get_device_type() == "pc")
-    toggle.no_uploads = self.get_value("NoUploads", condition=device_management and not self.vetting_branch)
-    toggle.no_onroad_uploads = self.get_value("DisableOnroadUploads", condition=toggle.no_uploads)
+    # End Driver Monitoring is the upload switch. On stops uploads completely.
+    # Off restarts them. AlwaysAllowUploads still overrides a stop.
+    toggle.end_driver_monitoring = self.get_value("EndDriverMonitoring")
+    toggle.no_uploads = bool(toggle.end_driver_monitoring)
+    toggle.no_onroad_uploads = False
 
     toggle.nostalgia_mode = self.get_value("NostalgiaMode", condition=toggle.openpilot_longitudinal and toggle.car_model == HYUNDAI_CAR.HYUNDAI_IONIQ_6)
     toggle.remap_cancel_to_distance = self.get_value(
@@ -1366,6 +1396,7 @@ class StarPilotVariables:
     if isinstance(lead_detection_probability, (int, float)) and lead_detection_probability > 1.0:
       lead_detection_probability = float(np.clip(lead_detection_probability * 0.01, 0.25, 0.5))
     toggle.lead_detection_probability = lead_detection_probability
+    toggle.lead_distance_velocity = self.get_value("LeadDistanceVelocity", condition=toggle.openpilot_longitudinal)
     toggle.recovery_power = self.get_value("RecoveryPower", cast=float, condition=longitudinal_tuning, default=1.0, min=0.5, max=2.0)
     toggle.taco_tune = self.get_value("TacoTune", condition=longitudinal_tuning)
 

@@ -522,6 +522,15 @@ SILVERADO_CENTER_TAPER_LAT = 0.18
 SILVERADO_CENTER_TAPER_LAT_WIDTH = 0.05
 SILVERADO_CENTER_TAPER_SPEED = 12.0
 SILVERADO_CENTER_TAPER_SPEED_WIDTH = 2.5
+# Lateral set from morrislee's batmobile Silverado tune. Steer ratio and
+# center-to-front are the geometry; the actuator delay is his measured lag.
+# The high-speed angle cap is raised above the shared 3.0 m/s^2 limit.
+SIERRA_STEER_RATIO = 17.6
+SILVERADO_STOCK_STEER_RATIO = 16.3
+SIERRA_CENTER_TO_FRONT_RATIO = 0.75
+SIERRA_ACTUATOR_DELAY = 0.27
+SIERRA_MIN_STEER_SPEED = -1.0
+SIERRA_MAX_LATERAL_ACCEL = 3.5
 
 GMC_YUKON_CC_PHASE_SCALE = 0.14
 GMC_YUKON_CC_PHASE_SPEED_ONSET = 12.0

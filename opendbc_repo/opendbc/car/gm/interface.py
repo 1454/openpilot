@@ -203,12 +203,23 @@ class CarInterface(CarInterfaceBase):
     assert min(torque_values) < -1 and max(torque_values) > 1, "The torque values should cover the range [-1, 1]"
     return torque_values, lataccel_values
 
+  def _sierra_siglin_scale(self, torque_params: structs.CarParams.LateralTorqueTuning) -> float:
+    # His Silverado curve keeps its shape and follows the learned lateral gain.
+    if not getattr(self, "sierra_siglin_scale", False):
+      return 1.0
+    learned = float(torque_params.latAccelFactor)
+    offline = float(self.CP.lateralTuning.torque.latAccelFactor)
+    if learned <= 1e-3 or offline <= 0.0:
+      return 1.0
+    return offline / learned
+
   def torque_from_lateral_accel(self) -> TorqueFromLateralAccelCallbackType:
     if get_nonlinear_torque_params(self.CP.carFingerprint) is not None:
       torque_values, lataccel_values = self.get_lataccel_torque_siglin()
 
       def torque_from_lateral_accel_siglin(lateral_acceleration: float, torque_params: structs.CarParams.LateralTorqueTuning):
-        return np.interp(lateral_acceleration, lataccel_values, torque_values)
+        torque = np.interp(lateral_acceleration, lataccel_values, torque_values)
+        return float(torque) * self._sierra_siglin_scale(torque_params)
       return torque_from_lateral_accel_siglin
     else:
       return self.torque_from_lateral_accel_linear
@@ -218,7 +229,8 @@ class CarInterface(CarInterfaceBase):
       torque_values, lataccel_values = self.get_lataccel_torque_siglin()
 
       def lateral_accel_from_torque_siglin(torque: float, torque_params: structs.CarParams.LateralTorqueTuning):
-        return np.interp(torque, torque_values, lataccel_values)
+        scale = self._sierra_siglin_scale(torque_params)
+        return np.interp(torque / scale, torque_values, lataccel_values)
       return lateral_accel_from_torque_siglin
     else:
       return self.lateral_accel_from_torque_linear
