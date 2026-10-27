@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from enum import IntEnum, IntFlag
+import contextlib
+import fcntl
 import os
 from pathlib import Path
 import re
@@ -252,6 +254,10 @@ else:
     # A compiled binding built before a key was added does not know that key.
     # Keys declared in params_keys.h but missing from the binding are stored as
     # plain files in the same params directory instead of failing.
+    def __init__(self, d="", *, memory=False, return_defaults=False):
+      # The binding's own return_defaults field is private to Cython.
+      self._extra_return_defaults = bool(return_defaults or memory)
+
     def _extra_name(self, key) -> str | None:
       name = key.decode("utf-8", errors="ignore") if isinstance(key, bytes) else str(key)
       cached = _EXTRA_KEY_CACHE.get(name)
@@ -277,14 +283,41 @@ else:
       except OSError:
         return b""
 
-    def _extra_write(self, name, data: bytes) -> None:
+    @contextlib.contextmanager
+    def _extra_lock(self):
+      # Same lock file the C++ side takes for writes and clear_all.
+      lock_path = os.path.join(os.path.dirname(self.get_param_path()), ".lock")
+      fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
+      try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+      finally:
+        try:
+          fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+          os.close(fd)
+
+    def _extra_write(self, name, data: bytes, locked: bool = False) -> None:
       path = self._extra_path(name)
-      tmp = f"{path}.tmp{os.getpid()}"
-      with open(tmp, "wb") as f:
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
-      os.replace(tmp, path)
+      directory = os.path.dirname(path)
+      with contextlib.nullcontext() if locked else self._extra_lock():
+        fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{name}.")
+        try:
+          with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+          os.chmod(tmp, 0o666)
+          os.replace(tmp, path)
+        except BaseException:
+          with contextlib.suppress(OSError):
+            os.remove(tmp)
+          raise
+        dir_fd = os.open(directory, os.O_RDONLY)
+        try:
+          os.fsync(dir_fd)
+        finally:
+          os.close(dir_fd)
 
     def _extra_default_bytes(self, name):
       default = _HEADER_KEYS[name]["default"]
@@ -337,6 +370,29 @@ else:
         return self._cpp2python(self._extra_type(name), value, None, name)
       return super().cpp2python(key, value)
 
+    def _extra_names(self) -> list[str]:
+      known = {k.decode("utf-8", errors="ignore") if isinstance(k, bytes) else str(k) for k in _Params.all_keys(self)}
+      return [name for name in _HEADER_KEYS if name not in known]
+
+    def clear_all(self, tx_flag=ParamKeyFlag.ALL):
+      # The C++ clear_all deletes every file whose key it does not know, which
+      # would wipe the fallback files. Keep the ones that are not being cleared.
+      keep = {}
+      for name in self._extra_names():
+        flag = 0
+        for flag_name in _HEADER_KEYS[name]["flags"]:
+          flag |= int(getattr(ParamKeyFlag, flag_name, 0))
+        if flag & int(tx_flag):
+          continue
+        raw = self._extra_read(name)
+        if raw:
+          keep[name] = raw
+      super().clear_all(tx_flag)
+      if keep:
+        with self._extra_lock():
+          for name, raw in keep.items():
+            self._extra_write(name, raw, locked=True)
+
     def all_keys(self):
       keys = list(super().all_keys())
       known = {k.decode("utf-8", errors="ignore") if isinstance(k, bytes) else str(k) for k in keys}
@@ -374,10 +430,9 @@ else:
     def remove(self, key):
       name = self._extra_name(key)
       if name is not None:
-        try:
-          os.remove(self._extra_path(name))
-        except OSError:
-          pass
+        with self._extra_lock():
+          with contextlib.suppress(OSError):
+            os.remove(self._extra_path(name))
         return
       super().remove(key)
 
@@ -394,7 +449,7 @@ else:
       name = self._extra_name(key)
       if name is not None:
         value_type = self._extra_type(name)
-        use_default = return_default or (self.return_defaults and not block)
+        use_default = return_default or (getattr(self, "_extra_return_defaults", False) and not block)
         default_bytes = self._extra_default_bytes(name) if use_default else None
         raw = self._extra_read(name)
         value = self._cpp2python(value_type, raw if raw != b"" else default_bytes, default_bytes, name)

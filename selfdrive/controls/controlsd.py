@@ -496,8 +496,11 @@ class Controls:
     else:
       center = stock_aF
 
-    mass_override = float(getattr(self.starpilot_toggles, "gas_vehicle_mass_kg", 0.0) or 0.0)
-    mass = mass_override if 200.0 < mass_override < 20000.0 else stock_m
+    mass = stock_m
+    if self.CP.carFingerprint in (GM_CAR.CHEVROLET_SILVERADO, GM_CAR.CHEVROLET_SILVERADO_CC):
+      mass_override = float(getattr(self.starpilot_toggles, "gas_vehicle_mass_kg", 0.0) or 0.0)
+      if 200.0 < mass_override < 20000.0:
+        mass = mass_override
     key = (round(center, 4), round(mass, 1))
     if key == getattr(self, "_vehicle_override_key", None):
       return

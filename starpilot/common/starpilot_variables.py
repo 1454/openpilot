@@ -197,7 +197,6 @@ CANCEL_BUTTON_MAPPINGS = (
 )
 
 AOL_LKAS_MIGRATION_KEY = "AOLLKASMigratedToButtonControl"
-COMMA_UPLOADS_NERFED_KEY = "CommaUploadsNerfed"
 FORD_LKAS_MIGRATION_KEY = "FordLKASButtonControlMigrated"
 SONATA_HYBRID_LKAS_MIGRATION_KEY = "SonataHybridLKASButtonControlMigrated"
 
@@ -421,16 +420,6 @@ def migrate_cancel_button_controls(params: Params | None = None) -> bool:
   return True
 
 
-def migrate_comma_uploads_off(params: Params | None = None) -> bool:
-  params = params or Params(return_defaults=True)
-  if params.get_bool(COMMA_UPLOADS_NERFED_KEY):
-    return False
-
-  params.put_bool("NoUploads", True)
-  params.put_bool(COMMA_UPLOADS_NERFED_KEY, True)
-  return True
-
-
 def sync_driver_monitoring_uploads(params: Params | None = None) -> bool:
   """Keep comma uploads tied to End Driver Monitoring.
 
@@ -488,7 +477,6 @@ class StarPilotVariables:
     self.params_memory = Params(memory=True)
     migrate_cancel_button_controls(self.params)
     migrate_aol_lkas_to_button_control(self.params)
-    migrate_comma_uploads_off(self.params)
     sync_driver_monitoring_uploads(self.params)
 
     self.starpilot_toggles = SimpleNamespace()

@@ -42,7 +42,7 @@ def _make_fake_binding(directory: str):
 
   class FakeParams:
     def __init__(self, d="", *, memory=False, return_defaults=False):
-      self.return_defaults = return_defaults or memory
+      self.__return_defaults = return_defaults or memory
 
     def check_key(self, key):
       key = key.encode() if isinstance(key, str) else key
@@ -66,6 +66,13 @@ def _make_fake_binding(directory: str):
     def all_keys(self):
       return [k.encode() for k in known]
 
+    def clear_all(self, tx_flag=_Flag.ALL):
+      for name in os.listdir(directory):
+        if name == ".lock":
+          continue
+        if name not in known:
+          os.remove(os.path.join(directory, name))
+
   module = types.ModuleType("openpilot.common.params_pyx")
   module.Params = FakeParams
   module.ParamKeyFlag = _Flag
@@ -88,21 +95,43 @@ def test_keys_the_binding_lacks_are_stored_as_files():
 
       assert params.get_bool("EndDriverMonitoring") is True
       assert params.get_float("GasGradeGain") == 100.0
-      assert params.get_bool("CommaUploadsNerfed") is False
+      assert params.get("GasGradeUphillCap") == 0.2
+      assert params.get_bool("LeadDistanceVelocity") is False
 
       params.put_bool("EndDriverMonitoring", False)
       params.put_float("GasTireRadius", 0.432)
-      params.put_bool("CommaUploadsNerfed", True)
+      params.put_bool("LeadDistanceVelocity", True)
 
       assert params.get_bool("EndDriverMonitoring") is False
       assert abs(params.get_float("GasTireRadius") - 0.432) < 1e-9
-      assert params.get_bool("CommaUploadsNerfed") is True
+      assert params.get_bool("LeadDistanceVelocity") is True
       assert open(os.path.join(directory, "EndDriverMonitoring"), "rb").read() == b"0"
 
       params.remove("EndDriverMonitoring")
       assert params.get_bool("EndDriverMonitoring") is True
       assert b"GasTireRadius" in params.all_keys()
       assert params.get_key_flag("GasTireRadius") & _Flag.PERSISTENT
+    finally:
+      sys.modules.pop("openpilot.common.params_pyx", None)
+      sys.modules.pop("openpilot.common.params", None)
+
+
+def test_clear_all_keeps_fallback_files():
+  with tempfile.TemporaryDirectory() as directory:
+    params_module = _load_params_module(directory)
+    try:
+      params = params_module.Params()
+      params.put_bool("EndDriverMonitoring", False)
+      params.put_float("GasTireRadius", 0.432)
+      stray = os.path.join(directory, "NotAKey")
+      open(stray, "wb").write(b"x")
+
+      params.clear_all(_Flag.CLEAR_ON_MANAGER_START)
+
+      assert params.get_bool("EndDriverMonitoring", default=True) is False
+      assert abs(params.get_float("GasTireRadius") - 0.432) < 1e-9
+      assert not os.path.exists(stray)
+      assert [n for n in os.listdir(directory) if n.startswith(".") and n != ".lock"] == []
     finally:
       sys.modules.pop("openpilot.common.params_pyx", None)
       sys.modules.pop("openpilot.common.params", None)
@@ -122,5 +151,6 @@ def test_unknown_names_still_raise_or_return_defaults():
 
 if __name__ == "__main__":
   test_keys_the_binding_lacks_are_stored_as_files()
+  test_clear_all_keeps_fallback_files()
   test_unknown_names_still_raise_or_return_defaults()
   print("params missing key tests passed")

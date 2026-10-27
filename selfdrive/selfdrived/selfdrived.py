@@ -265,6 +265,8 @@ class SelfdriveD:
     self.personality = log.LongitudinalPersonality.relaxed if self.safe_mode else self.params.get("LongitudinalPersonality", return_default=True)
     self.recalibrating_seen = False
     self.dm_lockout_set = False
+    self.dm_monitoring_ended = self.params.get_bool("EndDriverMonitoring")
+    self.dm_monitoring_ended_frame = 0
     self.dm_uncertain_alerted = False
     self.state_machine = StateMachine()
     self.rk = Ratekeeper(100, print_delay_threshold=None)
@@ -455,9 +457,11 @@ class SelfdriveD:
       self.events.add(EventName.resumeBlocked)
 
     if not self.CP.notCar:
-      monitoring_ended = self.params.get_bool("EndDriverMonitoring")
-      if monitoring_ended:
-        if self.dm_lockout_set or self.params.get_bool("DriverTooDistracted"):
+      if self.sm.frame - self.dm_monitoring_ended_frame >= 100:
+        self.dm_monitoring_ended = self.params.get_bool("EndDriverMonitoring")
+        self.dm_monitoring_ended_frame = self.sm.frame
+      if self.dm_monitoring_ended:
+        if self.dm_lockout_set:
           self.params.remove("DriverTooDistracted")
           self.dm_lockout_set = False
       else:

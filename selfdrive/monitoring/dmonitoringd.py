@@ -26,6 +26,7 @@ def dmonitoringd_thread():
     rhd_saved=params.get_bool("IsRhdDetected"),
     always_on=params.get_bool("AlwaysOnDM"),
     rhd_override=get_rhd_override(params),
+    monitoring_ended=params.get_bool("EndDriverMonitoring"),
   )
   demo_mode=False
 
@@ -35,8 +36,6 @@ def dmonitoringd_thread():
     if not sm.updated['driverStateV2']:
       # iterate when model has new output
       continue
-
-    DM.monitoring_ended = params.get_bool("EndDriverMonitoring")
 
     valid = sm.all_checks()
     if demo_mode and sm.valid['driverStateV2']:
@@ -51,6 +50,7 @@ def dmonitoringd_thread():
     # load live always-on toggle
     if sm['driverStateV2'].frameId % 40 == 1:
       DM.always_on = params.get_bool("AlwaysOnDM")
+      DM.monitoring_ended = params.get_bool("EndDriverMonitoring")
       DM.wheel_on_right_default = params.get_bool("IsRhdDetected")
       DM.wheel_on_right_override = get_rhd_override(params)
       demo_mode = params.get_bool("IsDriverViewEnabled")

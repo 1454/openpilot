@@ -271,6 +271,10 @@ def limit_grade_feedforward(planner_accel: float, pitch_accel: float, uphill_cap
 def grade_settings(starpilot_toggles) -> tuple[float, float]:
   gain = float(getattr(starpilot_toggles, "gas_grade_gain", 1.0))
   cap = float(getattr(starpilot_toggles, "gas_grade_uphill_cap", MAX_UPHILL_GRADE_FF))
+  if not math.isfinite(gain):
+    gain = 1.0
+  if not math.isfinite(cap):
+    cap = MAX_UPHILL_GRADE_FF
   return float(np.clip(gain, 0.0, 2.0)), float(np.clip(cap, 0.0, 1.0))
 
 

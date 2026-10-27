@@ -242,7 +242,7 @@ class StarPilotAddedLayout(_SettingsPage):
     return f"{self._effective_density():.3f}"
 
   def _grade_gain(self) -> float:
-    return float(self._params.get_float("GasGradeGain"))
+    return float(self._params.get_float("GasGradeGain", return_default=True))
 
   def _grade_cap(self) -> float:
-    return float(self._params.get_float("GasGradeUphillCap"))
+    return float(self._params.get_float("GasGradeUphillCap", return_default=True))
