@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from openpilot.common.constants import CV
 from openpilot.system.ui.lib.multilang import tr_noop
+from openpilot.selfdrive.controls.lib.gas_command import stock_drag_and_area
 
 from openpilot.selfdrive.ui.layouts.settings.starpilot.panel import _SettingsPage
 from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
@@ -14,16 +15,11 @@ from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
 _FALLBACK_WHEELBASE_M = 3.75
 _FALLBACK_MASS_KG = 2994.0 + 136.0
 _SIERRA_CENTER_TO_FRONT_RATIO = 0.75
-_STOCK_DRAG = 0.30
 _STOCK_AIR_DENSITY = 1.225
 
 
 def _tire_radius(wheelbase: float) -> float:
   return 0.075 * wheelbase + 0.1453
-
-
-def _frontal_area(wheelbase: float) -> float:
-  return 1.05 * wheelbase + 0.0679
 
 
 class StarPilotAddedLayout(_SettingsPage):
@@ -89,7 +85,7 @@ class StarPilotAddedLayout(_SettingsPage):
       ),
       SettingRow(
         "GasDragCoeff", "value", tr_noop("Drag Coefficient"),
-        subtitle=tr_noop("Cd in the gas torque command. Stock is 0.30."),
+        subtitle=tr_noop("Cd in the gas torque command. Stock is 0.38 on the Silverado (published) and 0.30 on other cars."),
         get_value=self._drag_label,
         on_click=lambda: self._show_slider(
           "GasDragCoeff", 0.15, 0.80, step=0.01, value_type="float",
@@ -98,7 +94,7 @@ class StarPilotAddedLayout(_SettingsPage):
       ),
       SettingRow(
         "GasFrontalArea", "value", tr_noop("Frontal Area"),
-        subtitle=tr_noop("Frontal area in the gas torque command. The shown value is the stock estimate until you change it."),
+        subtitle=tr_noop("Frontal area in the gas torque command. Stock is 3.4 m² on the Silverado and a wheelbase estimate on other cars."),
         get_value=self._area_label,
         on_click=lambda: self._show_slider(
           "GasFrontalArea", 1.5, 6.5, step=0.01, unit=" m²", value_type="float",
@@ -209,13 +205,19 @@ class StarPilotAddedLayout(_SettingsPage):
       return stored
     return self._stock_mass_kg() / CV.LB_TO_KG
 
+  def _is_silverado(self) -> bool:
+    cp = self._car_params()
+    if cp is None:
+      return True
+    return "SILVERADO" in str(getattr(cp, "carFingerprint", "")).upper()
+
   def _effective_drag(self) -> float:
     stored = self._stored("GasDragCoeff")
-    return stored if stored > 0.0 else _STOCK_DRAG
+    return stored if stored > 0.0 else stock_drag_and_area(self._is_silverado(), self._wheelbase())[0]
 
   def _effective_area(self) -> float:
     stored = self._stored("GasFrontalArea")
-    return stored if stored > 0.0 else _frontal_area(self._wheelbase())
+    return stored if stored > 0.0 else stock_drag_and_area(self._is_silverado(), self._wheelbase())[1]
 
   def _effective_density(self) -> float:
     stored = self._stored("GasAirDensity")

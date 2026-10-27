@@ -11,7 +11,7 @@ from opendbc.car.gm.values import (
 )
 from opendbc.car.interfaces import CarControllerBase
 from openpilot.common.pid import PIDController
-from openpilot.selfdrive.controls.lib.gas_command import resolved_gas_model
+from openpilot.selfdrive.controls.lib.gas_command import resolved_gas_model, stock_drag_and_area
 from openpilot.common.params import Params, UnknownKeyName
 from openpilot.starpilot.common.testing_grounds import testing_ground
 
@@ -578,8 +578,8 @@ class CarController(CarControllerBase):
     }
     self.mass = CP.mass
     self.tireRadius = 0.075 * CP.wheelbase + 0.1453
-    self.frontalArea = 1.05 * CP.wheelbase + 0.0679
-    self.coeffDrag = 0.30
+    self.coeffDrag, self.frontalArea = stock_drag_and_area(
+      CP.carFingerprint in (CAR.CHEVROLET_SILVERADO, CAR.CHEVROLET_SILVERADO_CC), CP.wheelbase)
     self.airDensity = 1.225
     self._stock_gas_mass = self.mass
     self._stock_tire_radius = self.tireRadius

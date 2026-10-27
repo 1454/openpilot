@@ -9,6 +9,17 @@ mass, drag coefficient, frontal area, and air density used in:
 from types import SimpleNamespace
 
 
+# 2020 Silverado crew cab: published Cd 0.38, frontal area about 3.3 to 3.4 m^2.
+SILVERADO_DRAG_COEFF = 0.38
+SILVERADO_FRONTAL_AREA = 3.4
+
+
+def stock_drag_and_area(is_silverado: bool, wheelbase: float, generic_drag: float = 0.30) -> tuple[float, float]:
+  if is_silverado:
+    return SILVERADO_DRAG_COEFF, SILVERADO_FRONTAL_AREA
+  return generic_drag, 1.05 * wheelbase + 0.0679
+
+
 def _pick(toggles, name: str, stock: float, low: float, high: float) -> float:
   value = float(getattr(toggles, name, 0.0) or 0.0)
   if low < value < high:

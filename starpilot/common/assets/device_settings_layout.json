@@ -83,7 +83,7 @@
       {
         "key": "GasDragCoeff",
         "label": "Drag Coefficient",
-        "description": "Cd in the gas torque command. 0 keeps the stock 0.30.",
+        "description": "Cd in the gas torque command. 0 keeps the stock value: 0.38 on the Silverado, 0.30 on other cars.",
         "picker_description": "Aerodynamic drag coefficient in the gas torque command.",
         "data_type": "float",
         "ui_type": "numeric",
@@ -95,7 +95,7 @@
       {
         "key": "GasFrontalArea",
         "label": "Frontal Area",
-        "description": "Frontal area in the gas torque command, in square meters. 0 keeps the stock estimate from the wheelbase.",
+        "description": "Frontal area in the gas torque command, in square meters. 0 keeps the stock value: 3.4 on the Silverado, a wheelbase estimate on other cars.",
         "picker_description": "Frontal area in the gas torque command.",
         "data_type": "float",
         "ui_type": "numeric",
