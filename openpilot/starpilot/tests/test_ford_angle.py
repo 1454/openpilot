@@ -224,6 +224,7 @@ class TestFordAngleJoined(unittest.TestCase):
                 configure_controller(SimpleNamespace(CP=cp, CC=baseline), params)
               providers = []
               received, sent, validity = [], [], []
+              controller_returns = []
               observed_allowed = False
               observed_relay = False
               observed_health = False
@@ -256,6 +257,8 @@ class TestFordAngleJoined(unittest.TestCase):
                 failing = 120 <= tick < 180
                 recovery = 180 <= tick < 220
                 received.clear()
+                received.extend(controller_returns)
+                controller_returns.clear()
 
                 def rx(name, values, *, failing=failing, kind=kind, source=source, tick=tick,
                        received=received, offset=offset, native=native, counter_rx=counter_rx):
@@ -467,6 +470,8 @@ class TestFordAngleJoined(unittest.TestCase):
                     self.assertFalse(auxiliary.safety_tx_hook(packet))
                     self.assertFalse(auxiliary.get_controls_allowed())
                   accepted = bool(safety.safety_tx_hook(packet))
+                  if addr in (0x3CA, 0x3D3, 0x3D6):
+                    controller_returns.append((addr, bytes(data), bus | (0x80 if accepted else 0xC0)))
                   if addr == 0x83:
                     # Native retains its physical-context rules; a held redundant cancel after ACC-off is denied.
                     expected = not safety.get_relay_malfunction() and not (data[1] & 1 and not safety.get_cruise_engaged_prev())
