@@ -232,6 +232,20 @@ def _early_tracking_offer(sm, cp, collector, actor, source, *, now_ns, clock):
   return offer
 
 
+def _pending_pose_bracket_ready(collector, control, now_ns):
+  """Scheduling hint only; the full original pose/native admission still runs."""
+  from openpilot.starpilot.flm.original_source_capture import MAX_GAP_NS
+  queue = getattr(collector, '_original_source_pose_queue', ())
+  if not queue:
+    return False
+  pose = queue[0]
+  stamp = getattr(pose, 'mono_ns', 0)
+  upper = getattr(pose, 'source_upper_ns', 0) or stamp
+  state = getattr(control, 'state_ns', 0)
+  return (type(stamp) is int and type(upper) is int and type(state) is int and
+          0 < stamp <= now_ns <= stamp + MAX_GAP_NS and 0 < upper <= state)
+
+
 def tracking_message(source, *, now_ns, current_native, offer=None, restore=None):
   """Serialize existing owned evidence; never renew a trial or physical lease."""
   from openpilot.starpilot.flm.live_trial_wire import write_tracking_source, write_trial, write_restore
@@ -525,6 +539,38 @@ def run(
   def study_native_current(now_ns):
     return study_health_control is not None and current_native_health(sm, CP, study_health_control, now_ns)
 
+  tracking_needs_native = False
+
+  def current_tracking_offer():
+    return live_offer
+
+  def renew_tracking():
+    nonlocal live_offer, next_tracking_status_ns, tracking_needs_native
+    if live_offer is None or live_actor is None or live_history.offer is not None:
+      tracking_needs_native = False
+      return False
+    valid, stamp = source_current()
+    if not valid or collector is None:
+      tracking_needs_native = False
+      return False
+    tracking_needs_native = not (collector.ready and
+      current_native_health(sm, CP, collector.ready[-1][0], stamp))
+    if tracking_needs_native:
+      return False
+    early = _early_tracking_offer(sm, CP, collector, live_actor, source, now_ns=stamp, clock=clock)
+    if early is None:
+      return False
+    live_offer = early
+    valid, stamp = source_current()
+    native = bool(valid and collector is not None and collector.ready and
+      current_native_health(sm, CP, collector.ready[-1][0], stamp))
+    message = tracking_message(source, now_ns=stamp, current_native=native, offer=live_offer)
+    if live_offer is not None and int(message.starpilotSteeringTracking.trial.version) == 1:
+      live_actor.mark_publication(live_offer)
+    pm.send('starpilotSteeringTracking', message)
+    next_tracking_status_ns = stamp + 50_000_000
+    return True
+
   class Sink:
     def split(self, reason, **kwargs):
       if collector is not None:
@@ -582,25 +628,10 @@ def run(
         collector._learning_current_native_allowed = bool(source_valid and previous is not None and
           current_native_health(sm, CP, previous, now))
 
-      # Only an already-existing source-only owner may renew here. Actual
-      # observe/witness/native/source gates stay intact; no numerical work or
-      # stale pose is promoted. A retained raw header may still need its first
-      # qualified response; only the actor owns physical-pose deduplication.
-      # The full post-drain path remains below.
-      if (live_offer is not None and live_actor is not None and live_history.offer is None and
-          source_valid and tracking_pose_header > 0):
-        early = _early_tracking_offer(sm, CP, collector, live_actor, source, now_ns=now, clock=clock)
-        if early is not None:
-          live_offer = early
-          source_valid, early_now = source_current()
-          early_native = bool(source_valid and collector is not None and collector.ready and
-            current_native_health(sm, CP, collector.ready[-1][0], early_now))
-          early_message = tracking_message(source, now_ns=early_now, current_native=early_native, offer=live_offer)
-          if live_offer is not None and int(early_message.starpilotSteeringTracking.trial.version) == 1:
-            live_actor.mark_publication(live_offer)
-          pm.send('starpilotSteeringTracking', early_message)
-          next_tracking_status_ns = early_now + 50_000_000
-          previous_tracking_pose_header = tracking_pose_header
+      # An existing trial can renew before FIFO work or as soon as its
+      # missing original bracket/native pair is admitted within that work.
+      if tracking_pose_header > 0 and renew_tracking():
+        previous_tracking_pose_header = tracking_pose_header
 
       native_refreshed = False
 
@@ -617,7 +648,7 @@ def run(
           valid_source, stamp = source_current(read=True)
         return valid_source, stamp
 
-      def control(event, current, stamp, offered=live_offer):
+      def control(event, current, stamp):
         nonlocal collector, raw_context, active_key, unavailable_reason
         valid_source, received_now = source_current()
         if not valid_source:
@@ -709,7 +740,9 @@ def run(
             valid_source, received_now = ingest_current(prepared)
             if not valid_source or collector is not original_collector:
               return
-          _collect_source_control(collector, prepared, sm, CP, received_now)
+          admitted = _collect_source_control(collector, prepared, sm, CP, received_now)
+          # A renewal can occur inside this batch; decode against the current owned offer.
+          offered = current_tracking_offer()
           if live_actor is not None and offered is not None:
             from openpilot.starpilot.flm.live_trial_wire import read_application
             application = read_application(event.starpilotLateralState, now_ns=received_now, offer=offered)
@@ -720,6 +753,9 @@ def run(
             application = read_restore_application(event.starpilotLateralState, now_ns=received_now, offer=live_history.offer)
             if application is not None and current_native_health(sm, CP, evidence, received_now):
               live_history.acknowledge(live_actor, application, now_ns=received_now)
+          if (live_actor is not None and offered is not None and admitted and
+              (tracking_needs_native or _pending_pose_bracket_ready(collector, prepared, clock()))):
+            renew_tracking()
 
       def output(event, current, stamp):
         valid_source, received_now = source_current()
@@ -733,13 +769,18 @@ def run(
             collector.split('no_current_applied_evidence')
             return
           applied = read_applied(event)
+          consumed = None
           if live_actor is not None:
             original_collector = collector
             consumed = collector.controls.get(applied.control_ns, collector.recent_controls.get(applied.control_ns))
             valid_source, received_now = ingest_current(consumed)
             if not valid_source or collector is not original_collector:
               return
+          previous_pair = collector.ready[-1] if live_actor is not None and collector.ready else None
           _collect_applied_output(collector, applied, sm, CP, received_now)
+          if (live_actor is not None and consumed is not None and collector.ready and collector.ready[-1] is not previous_pair and
+              (tracking_needs_native or _pending_pose_bracket_ready(collector, consumed, clock()))):
+            renew_tracking()
 
       drain_pair(control_socket, control, applied_socket, output, messaging.recv_one_or_none, sink, now, drain_state)
       if collector is not None:
