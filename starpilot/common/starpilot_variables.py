@@ -801,15 +801,15 @@ class StarPilotVariables:
     advanced_lateral_tuning = self.get_value("AdvancedLateralTune")
     toggle.lane_centering = self.get_value("LaneCentering")
     toggle.sierra_lateral = self.get_value("SierraLateral")
-    # 0 keeps the car's stock value. Weight is entered in pounds.
-    toggle.gas_tire_radius = self.get_value("GasTireRadius", cast=float, default=0.0, min=0.0, max=0.8)
-    toggle.center_to_front_ratio = self.get_value("CenterToFrontRatio", cast=float, default=0.0, min=0.0, max=0.9)
+    # Weight is entered in pounds.
+    toggle.gas_tire_radius = self.get_value("GasTireRadius", cast=float, default=0.432, min=0.0, max=0.8)
+    toggle.center_to_front_ratio = self.get_value("CenterToFrontRatio", cast=float, default=0.5, min=0.0, max=0.9)
     toggle.gas_vehicle_mass_kg = self.get_value(
-      "GasVehicleWeight", cast=float, default=0.0, conversion=CV.LB_TO_KG, min=0.0, max=20000.0 * CV.LB_TO_KG,
+      "GasVehicleWeight", cast=float, default=6250.0, conversion=CV.LB_TO_KG, min=0.0, max=20000.0 * CV.LB_TO_KG,
     )
-    toggle.gas_drag_coeff = self.get_value("GasDragCoeff", cast=float, default=0.0, min=0.0, max=1.5)
-    toggle.gas_frontal_area = self.get_value("GasFrontalArea", cast=float, default=0.0, min=0.0, max=12.0)
-    toggle.gas_air_density = self.get_value("GasAirDensity", cast=float, default=0.0, min=0.0, max=2.0)
+    toggle.gas_drag_coeff = self.get_value("GasDragCoeff", cast=float, default=0.38, min=0.0, max=1.5)
+    toggle.gas_frontal_area = self.get_value("GasFrontalArea", cast=float, default=3.4, min=0.0, max=12.0)
+    toggle.gas_air_density = self.get_value("GasAirDensity", cast=float, default=1.225, min=0.0, max=2.0)
     toggle.gas_grade_gain = self.get_value("GasGradeGain", cast=float, default=100.0, conversion=0.01, min=0.0, max=2.0)
     toggle.gas_grade_uphill_cap = self.get_value("GasGradeUphillCap", cast=float, default=0.2, min=0.0, max=1.0)
     toggle.lane_centering_pause_on_signal = self.get_value(

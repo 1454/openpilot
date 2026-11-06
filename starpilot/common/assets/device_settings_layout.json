@@ -47,7 +47,7 @@
       {
         "key": "GasTireRadius",
         "label": "Tire Radius",
-        "description": "Wheel radius used to turn acceleration into the gas torque command, in meters. Stock is 0.4266 m on the Silverado.",
+        "description": "Wheel radius used to turn acceleration into the gas torque command, in meters. Default is 0.432 m.",
         "picker_description": "Wheel radius in the gas torque command.",
         "data_type": "float",
         "ui_type": "numeric",
@@ -71,7 +71,7 @@
       {
         "key": "GasVehicleWeight",
         "label": "Weight",
-        "description": "Vehicle weight used in the gas torque command, in pounds. Stock is 6900 lb (3130 kg) on the Silverado.",
+        "description": "Vehicle weight used in the gas torque command, in pounds. Default is 6250 lb.",
         "picker_description": "Weight used to turn acceleration into gas torque.",
         "data_type": "float",
         "ui_type": "numeric",

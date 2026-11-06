@@ -11,14 +11,17 @@ from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
   SettingSection,
 )
 
-# Matches the Silverado curb weight plus the standard cargo allowance used in the gas command.
+# Default Silverado tire radius (0.432 m) and vehicle weight (6250 lb).
 _FALLBACK_WHEELBASE_M = 3.75
-_FALLBACK_MASS_KG = 2994.0 + 136.0
+_DEFAULT_TIRE_RADIUS_M = 0.432
+_DEFAULT_WEIGHT_LB = 6250.0
 _SIERRA_CENTER_TO_FRONT_RATIO = 0.75
 _STOCK_AIR_DENSITY = 1.225
 
 
-def _tire_radius(wheelbase: float) -> float:
+def _tire_radius(wheelbase: float, is_silverado: bool = True) -> float:
+  if is_silverado:
+    return _DEFAULT_TIRE_RADIUS_M
   return 0.075 * wheelbase + 0.1453
 
 
@@ -161,9 +164,11 @@ class StarPilotAddedLayout(_SettingsPage):
     return wheelbase if wheelbase > 1.0 else _FALLBACK_WHEELBASE_M
 
   def _stock_mass_kg(self) -> float:
+    if self._is_silverado():
+      return _DEFAULT_WEIGHT_LB * CV.LB_TO_KG
     cp = self._car_params()
     mass = float(getattr(cp, "mass", 0.0) or 0.0) if cp is not None else 0.0
-    return mass if mass > 200.0 else _FALLBACK_MASS_KG
+    return mass if mass > 200.0 else _DEFAULT_WEIGHT_LB * CV.LB_TO_KG
 
   def _stock_center_ratio(self) -> float:
     cp = self._car_params()
@@ -189,7 +194,7 @@ class StarPilotAddedLayout(_SettingsPage):
 
   def _effective_tire_radius(self) -> float:
     stored = self._stored("GasTireRadius")
-    return stored if stored > 0.0 else _tire_radius(self._wheelbase())
+    return stored if stored > 0.0 else _tire_radius(self._wheelbase(), self._is_silverado())
 
   def _effective_center_ratio(self) -> float:
     stored = self._stored("CenterToFrontRatio")
