@@ -47,6 +47,14 @@ def test_allow_uploads(started, no_uploads, no_onroad_uploads, always_allow_uplo
   assert allow_uploads(started, params, car.CarParams.new_message(), toggles) is expected
 
 
+def test_end_driver_monitoring_blocks_uploads_even_with_always_allow_uploads():
+  params = FakeParams(True)
+  toggles = SimpleNamespace(end_driver_monitoring=True, no_uploads=True, no_onroad_uploads=False)
+
+  assert allow_uploads(True, params, car.CarParams.new_message(), toggles) is False
+  assert allow_uploads(False, params, car.CarParams.new_message(), toggles) is False
+
+
 def test_uploader_runs_at_background_priority():
   assert managed_processes["uploader"].nice == 19
 

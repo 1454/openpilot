@@ -1087,7 +1087,7 @@ class StarPilotVariables:
     # loggerd/encoderd on real devices because that breaks route continuity/uploads.
     toggle.no_logging = self.get_value("NoLogging", condition=device_management and not self.vetting_branch) or (toggle.force_onroad and HARDWARE.get_device_type() == "pc")
     # End Driver Monitoring is the upload switch. On stops uploads completely.
-    # Off restarts them. AlwaysAllowUploads still overrides a stop.
+    # Off restarts them.
     toggle.end_driver_monitoring = self.get_value("EndDriverMonitoring")
     toggle.no_uploads = bool(toggle.end_driver_monitoring)
     toggle.no_onroad_uploads = False

@@ -193,11 +193,12 @@ class StarPilotAddedLayout(_SettingsPage):
 
   def _effective_center_ratio(self) -> float:
     stored = self._stored("CenterToFrontRatio")
+    stock = self._stock_center_ratio()
+    if self._sierra_center_active() and (stored <= 0.0 or abs(stored - stock) < 1e-4):
+      return _SIERRA_CENTER_TO_FRONT_RATIO
     if stored > 0.0:
       return stored
-    if self._sierra_center_active():
-      return _SIERRA_CENTER_TO_FRONT_RATIO
-    return self._stock_center_ratio()
+    return stock
 
   def _effective_weight_lb(self) -> float:
     stored = self._stored("GasVehicleWeight")
