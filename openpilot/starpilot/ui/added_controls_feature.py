@@ -14,7 +14,8 @@ LB_TO_KG = 0.453592
 KG_TO_LB = 1.0 / LB_TO_KG
 
 FALLBACK_WHEELBASE_M = 3.75
-FALLBACK_MASS_KG = 2994.0 + 136.0
+DEFAULT_TIRE_RADIUS_M = 0.432
+DEFAULT_WEIGHT_LB = 6250.0
 SIERRA_CENTER_TO_FRONT_RATIO = 0.75
 STOCK_AIR_DENSITY = 1.225
 
@@ -32,7 +33,7 @@ NUMERIC_KEYS = (
 ADDED_KEYS = frozenset((*TOGGLE_KEYS, *NUMERIC_KEYS))
 
 NUMERIC_SPECS = {
-  "GasTireRadius": ("Tire Radius", 0.001, 0.25, 0.60, "m", 4),
+  "GasTireRadius": ("Tire Radius", 0.001, 0.25, 0.60, "m", 3),
   "CenterToFrontRatio": ("Center to Front", 0.01, 0.30, 0.80, "ratio", 2),
   "GasVehicleWeight": ("Weight", 10.0, 2500.0, 15000.0, "lb", 0),
   "GasDragCoeff": ("Drag Coefficient", 0.01, 0.15, 0.80, "Cd", 2),
@@ -43,7 +44,9 @@ NUMERIC_SPECS = {
 }
 
 
-def _tire_radius(wheelbase: float) -> float:
+def _tire_radius(wheelbase: float, is_silverado: bool = True) -> float:
+  if is_silverado:
+    return DEFAULT_TIRE_RADIUS_M
   return 0.075 * wheelbase + 0.1453
 
 
@@ -73,9 +76,11 @@ class AddedControlsFeature:
     return wb if wb > 0.5 else FALLBACK_WHEELBASE_M
 
   def _stock_mass_kg(self) -> float:
+    if self._is_silverado():
+      return DEFAULT_WEIGHT_LB * LB_TO_KG
     cp = self._cp()
     mass = float(getattr(cp, "mass", 0.0) or 0.0) if cp is not None else 0.0
-    return mass if mass > 200.0 else FALLBACK_MASS_KG
+    return mass if mass > 200.0 else DEFAULT_WEIGHT_LB * LB_TO_KG
 
   def _stock_center_ratio(self) -> float:
     cp = self._cp()
@@ -95,7 +100,7 @@ class AddedControlsFeature:
     is_silverado = self._is_silverado()
     cd, area = stock_drag_and_area(is_silverado, wb)
     if key == "GasTireRadius":
-      return round(_tire_radius(wb), 4)
+      return round(_tire_radius(wb, is_silverado), 3)
     if key == "CenterToFrontRatio":
       return SIERRA_CENTER_TO_FRONT_RATIO if self._sierra_enabled() else round(self._stock_center_ratio(), 2)
     if key == "GasVehicleWeight":
@@ -174,16 +179,17 @@ class AddedControlsFeature:
         valid = False
 
     wb = self._wheelbase()
-    cd, area = stock_drag_and_area(self._is_silverado(), wb)
+    is_silverado = self._is_silverado()
+    cd, area = stock_drag_and_area(is_silverado, wb)
     reasons = {
-      "GasTireRadius": f"Wheel radius in the gas torque command. Stock is {_tire_radius(wb):.4f} m.",
+      "GasTireRadius": f"Wheel radius in the gas torque command. Default is {_tire_radius(wb, is_silverado):.3f} m.",
       "CenterToFrontRatio": (
         f"Front axle to center of gravity as a fraction of wheelbase ({wb:.2f} m). "
         f"Stock is {self._stock_center_ratio():.2f}; Sierra Lateral uses 0.75 until set."
       ),
       "GasVehicleWeight": (
         f"Vehicle weight in pounds for gas torque (and Silverado/Sierra steering model). "
-        f"Stock is {round(self._stock_mass_kg() * KG_TO_LB):.0f} lb ({self._stock_mass_kg():.0f} kg)."
+        f"Default is {round(self._stock_mass_kg() * KG_TO_LB):.0f} lb ({self._stock_mass_kg():.0f} kg)."
       ),
       "GasDragCoeff": f"Aerodynamic drag coefficient Cd in the gas torque command. Stock is {cd:.2f}.",
       "GasFrontalArea": f"Frontal area in the gas torque command. Stock is {area:.2f} m².",
