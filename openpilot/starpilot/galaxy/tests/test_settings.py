@@ -255,11 +255,11 @@ class SettingsGatewayTest(unittest.TestCase):
     self.assertEqual(next(page for page in lateral["pages"] if page["id"] == "aol")["title"], self.page("aol")["title"])
     self.assertEqual([row["page"] for row in hub["rows"]],
                      ["curve", "slc", "lane", "lane_change", "profiles", "conditional", "torque", "aol", "wheel",
-                     "vehicle", "personalities"])
+                     "vehicle", "personalities", "added"])
     self.assertEqual([row["page"] for row in self.page("personalities")["rows"]],
                      ["aggressive", "standard", "relaxed", "traffic"])
     for page in ("slc", "lane", "lane_change", "profiles", "conditional", "conditional/cem", "conditional/ccm",
-                 "curve", "torque", "aol", "appearance", "display", "sounds", "pip", "sentry", "personalities",
+                 "curve", "torque", "aol", "added", "appearance", "display", "sounds", "pip", "sentry", "personalities",
                  "aggressive", "standard", "relaxed", "traffic", "aggressive/following"):
       with self.subTest(page=page):
         result = self.page(page)
@@ -1255,8 +1255,9 @@ class SettingsGatewayTest(unittest.TestCase):
   def test_data_page_has_only_upload_preference(self):
     self.context.value = AuthorityContext(False, None, None)
     page = self.page("data")
-    self.assertEqual([row["label"] for row in page["rows"]], ["Always Allow Uploads"])
+    self.assertEqual([row["label"] for row in page["rows"]], ["Always Allow Uploads", "Disable Uploads & End Driver Monitoring"])
     self.assertTrue(page["rows"][0]["available"])
+    self.assertTrue(page["rows"][1]["available"])
 
   def test_force_stop_off_onroad_with_master_off_and_session_vehicle_guards(self):
     cp = self.context.value.cp

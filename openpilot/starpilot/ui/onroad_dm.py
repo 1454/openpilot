@@ -68,7 +68,7 @@ class StableDriverStateRenderer(DriverStateRenderer):
   def _update_state(self):
     super()._update_state()
     if self.should_draw:
-      self._fade_filter.x = 1.0 if self._face_detected else min(self._fade_filter.x, 0.35)
+      self._fade_filter.x = 1.0 if (self._face_detected or getattr(self, 'monitoring_ended', False)) else min(self._fade_filter.x, 0.35)
 
 
 class LargeDriverStateRenderer(StableDriverStateRenderer):
@@ -90,6 +90,10 @@ class DriverMonitorLayer:
     ready = fresh and valid_observation(monitor, driver)
     visible = monitor_visible(self.profile, state, fresh=ready, onroad=onroad, top_icons=top_icons)
     self.renderer.set_should_draw(visible)
+    try:
+      self.renderer.monitoring_ended = bool(ui_state.params.get_bool("EndDriverMonitoring"))
+    except Exception:
+      pass
     is_rhd = monitor.isRHD if ready else getattr(self.renderer, '_is_rhd', False)
     bounds = monitor_bounds(state.customization, self.profile, is_rhd)
     self.renderer.set_position(bounds.x, bounds.y)
@@ -98,7 +102,7 @@ class DriverMonitorLayer:
     else:
       self.renderer._is_active = False
       self.renderer._awareness_unfull = False
-      self.renderer._fade_filter.update(0.35 if visible else 0.0)
+      self.renderer._fade_filter.update((1.0 if getattr(self.renderer, 'monitoring_ended', False) else 0.35) if visible else 0.0)
     if visible:
       draw_widget_frame(bounds, state.customization, self.profile, "driver_monitor")
       draw_monitor_art(self.renderer, bounds, self.profile)

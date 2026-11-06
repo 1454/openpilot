@@ -15,9 +15,11 @@ from openpilot.common.realtime import config_realtime_process, DT_CTRL, Priority
 from openpilot.selfdrive.controls.lib.cycle_timing import ControlCycleTiming, PUBLISH_PHASES
 from openpilot.common.swaglog import cloudlog
 
+from opendbc.car import scale_rot_inertia, scale_tire_stiffness
 from opendbc.car.car_helpers import interfaces
+from opendbc.car.gm.values import CAR as GM_CAR
 from opendbc.car.vehicle_model import VehicleModel
-from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
+from openpilot.selfdrive.controls.lib.drive_helpers import MAX_LATERAL_ACCEL_NO_ROLL, clip_curvature
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.lateral_controller_factory import create_lateral_controller
@@ -63,6 +65,16 @@ LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
+
+# Lateral set from morrislee's batmobile Silverado tune. Steer ratio and
+# center-to-front are the geometry; the actuator delay is his measured lag.
+# The high-speed angle cap is raised above the shared 3.0 m/s^2 limit.
+SIERRA_STEER_RATIO = 17.6
+SILVERADO_STOCK_STEER_RATIO = 16.3
+SIERRA_CENTER_TO_FRONT_RATIO = 0.75
+SIERRA_ACTUATOR_DELAY = 0.27
+SIERRA_MIN_STEER_SPEED = -1.0
+SIERRA_MAX_LATERAL_ACCEL = 3.5
 
 
 class Controls:
@@ -252,6 +264,89 @@ class Controls:
     for name in ('automatic_flm_stages', 'automatic_flm_centre', 'automatic_flm_observation', 'automatic_flm_adapter'):
       self.LaC.__dict__.pop(name, None)
 
+  def _refresh_sierra_and_vehicle_overrides(self):
+    if not hasattr(self, '_sierra_override_frame'):
+      self._sierra_override_frame = -100
+      self._sierra_lateral = False
+      self._center_to_front_ratio = 0.0
+      self._gas_vehicle_mass_kg = 0.0
+      self._custom_steer_ratio = False
+      self._custom_steer_delay = False
+    if self.sm.frame - self._sierra_override_frame >= 100:
+      self._sierra_override_frame = self.sm.frame
+      params = getattr(self, 'params', None)
+      is_silverado = self.CP.carFingerprint in (GM_CAR.CHEVROLET_SILVERADO, GM_CAR.CHEVROLET_SILVERADO_CC)
+      safe = False
+      if params is not None:
+        try:
+          safe = bool(params.get_bool("SafeMode"))
+        except Exception:
+          safe = False
+      if params is None or safe:
+        self._sierra_lateral = False
+        self._center_to_front_ratio = 0.0
+        self._gas_vehicle_mass_kg = 0.0
+        self._custom_steer_ratio = False
+        self._custom_steer_delay = False
+      else:
+        try:
+          self._sierra_lateral = bool(is_silverado and params.get_bool("SierraLateral"))
+        except Exception:
+          self._sierra_lateral = False
+        try:
+          self._center_to_front_ratio = float(params.get_float("CenterToFrontRatio", default=0.0))
+        except Exception:
+          self._center_to_front_ratio = 0.0
+        try:
+          self._gas_vehicle_mass_kg = float(params.get_float("GasVehicleWeight", default=0.0)) * CV.LB_TO_KG if is_silverado else 0.0
+        except Exception:
+          self._gas_vehicle_mass_kg = 0.0
+        try:
+          from openpilot.starpilot.lateral.gm_geometry_runtime import read_geometry
+          selection = read_geometry(params, self.CP)
+          profile = selection.profile
+          self._custom_steer_ratio = bool(
+            profile is not None and profile.ratio.mode == 'custom' and profile.ratio.custom_value is not None and not selection.force_auto
+          )
+          self._custom_steer_delay = bool(profile is not None and not profile.automatic_delay)
+        except Exception:
+          self._custom_steer_ratio = False
+          self._custom_steer_delay = False
+
+    if not hasattr(self, "_stock_vehicle_geometry"):
+      self._stock_vehicle_geometry = (
+        self.VM.m, self.VM.j, self.VM.aF, self.VM.aR, self.VM.cF_orig, self.VM.cR_orig,
+      )
+    stock_m, stock_j, stock_aF, stock_aR, stock_cF, stock_cR = self._stock_vehicle_geometry
+
+    ratio = self._center_to_front_ratio
+    if 0.2 < ratio < 0.9:
+      center = self.CP.wheelbase * ratio
+    elif self._sierra_lateral:
+      center = self.CP.wheelbase * SIERRA_CENTER_TO_FRONT_RATIO
+    else:
+      center = stock_aF
+
+    mass = stock_m
+    if self.CP.carFingerprint in (GM_CAR.CHEVROLET_SILVERADO, GM_CAR.CHEVROLET_SILVERADO_CC):
+      if 200.0 < self._gas_vehicle_mass_kg < 20000.0:
+        mass = self._gas_vehicle_mass_kg
+    key = (round(center, 4), round(mass, 1))
+    if key != getattr(self, "_vehicle_override_key", None):
+      self._vehicle_override_key = key
+      if abs(center - stock_aF) < 1e-4 and abs(mass - stock_m) < 0.5:
+        self.VM.m, self.VM.j = stock_m, stock_j
+        self.VM.aF, self.VM.aR = stock_aF, stock_aR
+        self.VM.cF_orig, self.VM.cR_orig = stock_cF, stock_cR
+      else:
+        self.VM.m = mass
+        self.VM.j = scale_rot_inertia(mass, self.CP.wheelbase)
+        self.VM.aF = center
+        self.VM.aR = self.CP.wheelbase - center
+        self.VM.cF_orig, self.VM.cR_orig = scale_tire_stiffness(
+          mass, self.CP.wheelbase, center, self.CP.tireStiffnessFactor)
+    return self._sierra_lateral
+
   def state_control(self, *, lane_centering: LaneCenteringRequest | None = None):
     cycle_timing = getattr(self, 'control_cycle_timing', None)
     if cycle_timing is not None:
@@ -283,6 +378,9 @@ class Controls:
     lp = self.sm['vehicleParameters']
     x = max(lp.stiffnessFactor, 0.1)
     sr = max(lp.steerRatio, 0.1)
+    sierra_lateral = self._refresh_sierra_and_vehicle_overrides()
+    if sierra_lateral and not getattr(self, '_custom_steer_ratio', False):
+      sr = SIERRA_STEER_RATIO
     torque_extension = getattr(self.LaC, 'starpilot_extension', None)
     if torque_extension is not None:
       sr = torque_extension.vehicle_model_ratio(sr, CS.vEgo)
@@ -314,7 +412,8 @@ class Controls:
     CC.enabled = self.sm['selfdriveState'].enabled
 
     # Check which actuators can be enabled
-    standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
+    min_steer_speed = SIERRA_MIN_STEER_SPEED if sierra_lateral else self.CP.minSteerSpeed
+    standstill = abs(CS.vEgo) <= max(min_steer_speed, 0.3) or CS.standstill
     lateral_requested = self.sm['selfdriveState'].enabled and self.sm['selfdriveState'].active
     CC.latActive = ordinary_lateral_requested(self.sm['selfdriveState'].active, CS, self.CP)
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
@@ -330,7 +429,7 @@ class Controls:
         if lateral_inputs_refreshed:
           CS = self.sm['carState']
           CC.enabled = self.sm['selfdriveState'].enabled
-          standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
+          standstill = abs(CS.vEgo) <= max(min_steer_speed, 0.3) or CS.standstill
           steer_angle_without_offset = math.radians(CS.steeringAngleDeg - lp.angleOffsetDeg)
           self.curvature = -self.VM.calc_curvature(steer_angle_without_offset, CS.vEgo, lp.roll)
           now_ns = time.monotonic_ns()
@@ -547,9 +646,16 @@ class Controls:
       turn_assist=assist,
     )
     new_desired_curvature = limit_rate(CS.vEgo, previous_curvature, new_desired_curvature, factor)
-    self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, previous_curvature, new_desired_curvature, lp.roll)
+    lat_accel_factor = (SIERRA_MAX_LATERAL_ACCEL / MAX_LATERAL_ACCEL_NO_ROLL) if sierra_lateral else 1.0
+    report_lat_accel = SIERRA_MAX_LATERAL_ACCEL if sierra_lateral else None
+    self.desired_curvature, curvature_limited = clip_curvature(
+      CS.vEgo, previous_curvature, new_desired_curvature, lp.roll, lat_accel_factor, report_lat_accel
+    )
     if self.last_lane_centering_result is not None and self.last_lane_centering_result.correction != 0.0:
-      baseline_curvature, _ = clip_curvature(CS.vEgo, previous_curvature, limit_rate(CS.vEgo, previous_curvature, lane_base_curvature, factor), lp.roll)
+      baseline_curvature, _ = clip_curvature(
+        CS.vEgo, previous_curvature, limit_rate(CS.vEgo, previous_curvature, lane_base_curvature, factor),
+        lp.roll, lat_accel_factor, report_lat_accel,
+      )
       guarded = self.lane_centering_controller.guard_applied(model_v2, baseline_curvature, self.desired_curvature, self.curvature, CS.vEgo, lane_delay)
       if guarded != self.desired_curvature:
         self.desired_curvature = guarded
@@ -558,6 +664,12 @@ class Controls:
     from openpilot.starpilot.car.subaru.smoothing import seconds as subaru_smooth_seconds, control_maximum
 
     lat_delay = self.sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS + subaru_smooth_seconds(CS.vEgo, control_maximum(self))
+    if sierra_lateral and not getattr(self, '_custom_steer_delay', False):
+      lat_delay = (SIERRA_ACTUATOR_DELAY + 0.2) + LAT_SMOOTH_SECONDS
+    if hasattr(self, "CI"):
+      self.CI.sierra_siglin_scale = sierra_lateral
+    if hasattr(self, "LaC"):
+      self.LaC.sierra_lateral = sierra_lateral
 
     actuators.curvature = self.desired_curvature
     if cycle_timing is not None:

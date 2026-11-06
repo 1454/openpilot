@@ -38,6 +38,8 @@ class Selection:
 
 
 MINIMUM_LIMIT_MPS = 1.0
+MPH_TO_MPS = 0.44704
+VISION_MAP_DEFER_DELTA_MPS = 10.0 * MPH_TO_MPS
 PRIMARY_ORDER = (Source.DASHBOARD, Source.MAP, Source.VISION)
 
 
@@ -78,6 +80,9 @@ def select_limit(observations: Mapping[Source, Observation], policy: SelectionPo
   if eligible:
     if policy.mode == SelectionMode.ORDERED:
       selected = eligible[0]
+      if (selected == Source.VISION and Source.MAP in eligible and
+          observations[Source.MAP].candidate.speed_mps - observations[Source.VISION].candidate.speed_mps >= VISION_MAP_DEFER_DELTA_MPS - 1e-6):
+        selected = Source.MAP
     else:
       # Stable source ordering makes equal-limit ties independent of input map order.
       choose = max if policy.mode == SelectionMode.HIGHEST else min

@@ -44,6 +44,7 @@ class DriverStateRenderer(Widget):
     self._force_active = False
     self._looking_center = False
     self._awareness_unfull = False
+    self.monitoring_ended = False
 
     self._fade_filter = FirstOrderFilter(0.0, 0.05, 1 / gui_app.target_fps)
     self._color_fade_filter = FirstOrderFilter(1.0, 0.05, 1 / gui_app.target_fps) # 1.0 = full green, 0.0 = full orange
@@ -142,6 +143,28 @@ class DriverStateRenderer(Widget):
           f.update(target)
           self._draw_line(angle, f, self._looking_center)
 
+    if self.monitoring_ended:
+      self._draw_monitoring_off_mark()
+
+  def _draw_monitoring_off_mark(self):
+    alpha = int(255 * self._fade_filter.x)
+    if alpha < 8:
+      return
+    scale = self._rect.width / 128.0
+    span = self._rect.width * 0.34
+    cx = self._rect.x + self._rect.width / 2
+    cy = self._rect.y + self._rect.height / 2
+    start_a = rl.Vector2(cx - span, cy - span)
+    end_a = rl.Vector2(cx + span, cy + span)
+    start_b = rl.Vector2(cx - span, cy + span)
+    end_b = rl.Vector2(cx + span, cy - span)
+    outline = rl.Color(20, 0, 0, alpha)
+    red = rl.Color(230, 36, 36, alpha)
+    rl.draw_line_ex(start_a, end_a, max(4.0, 14.0 * scale), outline)
+    rl.draw_line_ex(start_b, end_b, max(4.0, 14.0 * scale), outline)
+    rl.draw_line_ex(start_a, end_a, max(2.5, 8.0 * scale), red)
+    rl.draw_line_ex(start_b, end_b, max(2.5, 8.0 * scale), red)
+
   def _draw_line(self, angle: int, f: FirstOrderFilter, grey: bool):
     line_length = self._rect.width / 6
     line_length = round(np.interp(f.x, [0.0, 1.0], [0, line_length]))
@@ -209,7 +232,7 @@ class DriverStateRenderer(Widget):
 
     if not self.should_draw:
       self._fade_filter.update(0.0)
-    elif not self.effective_active:
-      self._fade_filter.update(0.35)
-    else:
+    elif self.monitoring_ended or self.effective_active:
       self._fade_filter.update(1.0)
+    else:
+      self._fade_filter.update(0.35)

@@ -81,6 +81,7 @@ def manager_init() -> None:
     default_value = not os.path.lexists(params.get_param_path("Version")) if k == b"LaneCentering" else params.get_default_value(k)
     if default_value is not None and not os.path.lexists(params.get_param_path(k)):
       params.put(k, default_value, block=True)
+  params.put_bool("NoUploads", params.get_bool("EndDriverMonitoring"), block=True)
 
   # Create folders needed for msgq
   try:

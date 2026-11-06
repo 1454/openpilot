@@ -29,7 +29,11 @@ class TestUploadPreferences(unittest.TestCase):
       def get_bool(self, key):
         state.reads.append(key)
         current = observations[max(0, state.index)]
-        return current.get('allow', False) if key == 'AlwaysAllowUploads' else current.get('offroad', False)
+        if key == 'AlwaysAllowUploads':
+          return current.get('allow', False)
+        if key in ('EndDriverMonitoring', 'NoUploads'):
+          return current.get('stop_uploads', False)
+        return current.get('offroad', False)
 
     class Master:
       def update(self, _):

@@ -18,7 +18,11 @@ def dmonitoringd_thread():
   required = ['driverStateV2', 'extrinsicsCalibration', 'carState', 'selfdriveState', 'modelV2']
   sm = messaging.SubMaster(required + (['aolAxisState', 'aolSafetyWire'] if aol_replay else []), poll='driverStateV2')
 
-  DM = DriverMonitoring(rhd_saved=params.get_bool("IsRhdDetected"), always_on=params.get_bool("AlwaysOnDM"))
+  DM = DriverMonitoring(
+    rhd_saved=params.get_bool("IsRhdDetected"),
+    always_on=params.get_bool("AlwaysOnDM"),
+    monitoring_ended=params.get_bool("EndDriverMonitoring"),
+  )
   demo_mode=False
 
   # 20Hz <- dmonitoringmodeld
@@ -42,6 +46,7 @@ def dmonitoringd_thread():
     # load live always-on toggle
     if sm['driverStateV2'].frameId % 40 == 1:
       DM.always_on = params.get_bool("AlwaysOnDM")
+      DM.monitoring_ended = params.get_bool("EndDriverMonitoring")
       demo_mode = params.get_bool("IsDriverViewEnabled")
 
     # save rhd virtual toggle every 5 mins

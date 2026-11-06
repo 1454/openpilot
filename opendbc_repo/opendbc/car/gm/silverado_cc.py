@@ -3,6 +3,12 @@
 import math
 import numpy as np
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY
+from openpilot.selfdrive.controls.lib.gas_command import (
+  grade_settings,
+  limit_grade_feedforward,
+  resolved_gas_model,
+  stock_drag_and_area,
+)
 
 def pedal_fraction(accel: float, speed: float) -> float:
   """Original Silverado generic pedal fraction; no regen paddle owner."""
@@ -52,7 +58,7 @@ class SilveradoPedalCommand:
     if self.recovering:
       self.recovery_emitted = 0.
 
-  def update(self, accel, long_active, cs, *, stopping, resume, orientation=None):
+  def update(self, accel, long_active, cs, *, stopping, resume, orientation=None, gas_model=None):
     # The original outer caller bypasses calc on these branches and retains its memory.
     if not long_active:
       self.pause_recovery()
@@ -65,15 +71,21 @@ class SilveradoPedalCommand:
     self.active_last = True
     command = self.steady
 
+    stock_cd, stock_area = stock_drag_and_area(True, self.wheelbase)
+    stock_radius = .075 * self.wheelbase + .1453
+    mass, radius, coeff_drag, frontal, air_density = resolved_gas_model(
+      self.mass, stock_radius, stock_cd, stock_area, 1.225, gas_model
+    )
+    grade_gain, grade_uphill_cap = grade_settings(gas_model)
+
     pitch = 0.
     if orientation is not None and len(orientation) == 3 and cs.vEgo > .5 and math.isfinite(orientation[1]):
-      pitch = math.sin(orientation[1]) * ACCELERATION_DUE_TO_GRAVITY
-      pitch = 0. if pitch > 0. and accel > 0. else min(pitch, .20)
-    radius = .075 * self.wheelbase + .1453
-    drag = .5 * .30 * (1.05 * self.wheelbase + .0679) * 1.225 * cs.vEgo ** 2
-    scaled = radius * (self.mass * float(np.clip(accel + pitch, -4., 2.)) + drag) + 6150
+      pitch = math.sin(orientation[1]) * ACCELERATION_DUE_TO_GRAVITY * grade_gain
+      pitch = limit_grade_feedforward(accel, pitch, grade_uphill_cap)
+    drag = .5 * coeff_drag * frontal * air_density * cs.vEgo ** 2
+    scaled = radius * (mass * float(np.clip(accel + pitch, -4., 2.)) + drag) + 6150
     gas = int(round(np.clip(scaled, 5500, 7168)))
-    brake = int(round(np.interp(min((scaled - 6150) / (radius * self.mass), 0.), [-4., 0.], [400., 0.])))
+    brake = int(round(np.interp(min((scaled - 6150) / (radius * mass), 0.), [-4., 0.], [400., 0.])))
     if brake > 0 or stopping:
       gas = 5500
     if gas > 5500 and cs.cruiseState.standstill and (cs.standstill or cs.vEgo < .5):

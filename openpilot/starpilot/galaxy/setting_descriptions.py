@@ -158,6 +158,19 @@ DESCRIPTIONS = {
   'FordHighSpeedDampening_ang': ('Tunes the straight-road response at highway speed in angle mode: lower it if the car oversteers,' +
     ' raise it if it understeers.'),
   'lane_change_factor_high_ang': 'Scales steering during a lane change in angle mode. Values over 1.0 strengthen it.',
+  'heading:added_toggles': 'Toggles for driver monitoring, uploads, lead speed estimation, and Sierra lateral tuning.',
+  'heading:added_gas': 'Vehicle geometry, weight, aerodynamic drag, and road-grade adjustments for the GM gas torque command.',
+  'EndDriverMonitoring': 'Ends driver monitoring alerts and stops comma uploads when On, or restores driver monitoring and resumes uploads when Off.',
+  'LeadDistanceVelocity': 'Estimates a vision lead vehicle speed and hard braking from distance instead of the model velocity.',
+  'SierraLateral': 'Selects the batmobile lateral parameter set on Silverado and Sierra and raises the high-speed steering limit.',
+  'GasTireRadius': 'Sets the wheel radius used in the GM gas torque calculation.',
+  'CenterToFrontRatio': 'Sets the front-axle-to-center-of-gravity fraction of wheelbase used by the vehicle steering model.',
+  'GasVehicleWeight': 'Sets the vehicle weight in pounds used in the GM gas torque calculation and Silverado steering model.',
+  'GasDragCoeff': 'Sets the aerodynamic drag coefficient Cd used in the GM gas torque calculation.',
+  'GasFrontalArea': 'Sets the frontal area in square meters used in the GM gas torque calculation.',
+  'GasAirDensity': 'Sets the air density used in the GM gas torque calculation.',
+  'GasGradeGain': 'Scales the road-grade pitch term added to the GM gas torque command.',
+  'GasGradeUphillCap': 'Caps the maximum uphill road-grade assist added to the GM gas torque command.',
 }
 
 # These are initialization explanations, not a second defaults table.

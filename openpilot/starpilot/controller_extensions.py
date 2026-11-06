@@ -37,10 +37,11 @@ def configure_controller(CI, params):
     from opendbc.car.gm.values import (is_bolt_euv_longitudinal, is_volt_longitudinal,
                                      camera_acc_pedal_profile, volt_cc_pedal_profile)
     from opendbc.car.gm.suburban import stopping_decel_rate as suburban_stopping_decel_rate
+    from openpilot.starpilot.car.gm.tune_preferences import GasModelPreference, GradeCompensationPreference
+    controller.gas_model_input = GasModelPreference(params)
     pedal = camera_acc_pedal_profile(cp) or volt_cc_pedal_profile(cp)
     if (is_bolt_euv_longitudinal(cp) or is_volt_longitudinal(cp) or suburban_stopping_decel_rate(cp) is not None or
         pedal is not None and pedal.longitudinal):
-      from openpilot.starpilot.car.gm.tune_preferences import GradeCompensationPreference
       controller.long_pitch_input = GradeCompensationPreference(params)
   from opendbc.car.gm.truck_longitudinal import truck_tuning_supported
   if controller is not None and truck_tuning_supported(cp):

@@ -58,6 +58,7 @@ from openpilot.starpilot.ui.ford_bluepilot_feature import FordBluePilotFeature, 
 from openpilot.starpilot.ui.ford_cluster_feature import FordClusterFeature
 from openpilot.starpilot.ui.preap_radar_feature import PreAPRadarFeature, KEYS as PREAP_RADAR_KEYS, capability as preap_radar_capability
 from openpilot.starpilot.ui.gm_tune_feature import GmTuneFeature, GmTruckFeature, GmEvPresetFeature
+from openpilot.starpilot.ui.added_controls_feature import ADDED_KEYS, AddedControlsFeature
 from openpilot.starpilot.car.gm.tune_preferences import KEY as GM_TUNE_KEY
 from openpilot.starpilot.car.gm.radar_recovery import KEY as RADAR_RECOVERY_KEY
 from openpilot.starpilot.ui.volt_radar_feature import VoltRadarFeature
@@ -173,6 +174,7 @@ class FeatureSettingsOwner:
     self.gm_tune = GmTuneFeature(self)
     self.gm_truck = GmTruckFeature(self)
     self.gm_ev_preset = GmEvPresetFeature(self)
+    self.added_controls = AddedControlsFeature(self)
     self.volt_radar = VoltRadarFeature(self, galaxy=galaxy)
     self.panda_wake = PandaWakeFeature(self, galaxy=galaxy)
     self.traffic_profiles = TrafficFeature(self)
@@ -809,12 +811,28 @@ class FeatureSettingsOwner:
                       configure_while_driving: bool = False) -> FeatureSettingsState:
     del metric  # The persisted unit file, including invalid bytes, owns offset labels.
     configurable = parked or configure_while_driving
-    title = {FeaturePage.HUB: "Driving Controls", FeaturePage.LANE: "Lane Centering"}.get(page, page.replace("_", " ").title())
+    title = {FeaturePage.HUB: "Driving Controls", FeaturePage.LANE: "Lane Centering", FeaturePage.ADDED: "Added Controls"}.get(page, page.replace("_", " ").title())
     rows: list[FeatureRow] = []
     if page == "data":
       title = "Data Uploads"
-      rows = [self._bool_row("AlwaysAllowUploads", "Always Allow Uploads", self.authority("preferences"),
-                             "Allow queued full logs and videos on metered networks. Uses mobile data.")]
+      rows = [
+        self._bool_row(
+          "AlwaysAllowUploads",
+          "Always Allow Uploads",
+          self.authority("preferences"),
+          "Allow queued full logs and videos on metered networks. Uses mobile data.",
+        ),
+        self.added_controls._bool_row(
+          "EndDriverMonitoring",
+          "Disable Uploads & End Driver Monitoring",
+          True,
+          self.authority("preferences"),
+          "On stops comma uploads and ends driver monitoring alerts. Off restores driver monitoring and restarts uploads.",
+          dependencies=(("NoUploads", self._raw("NoUploads")),),
+        ),
+      ]
+    elif page == FeaturePage.ADDED:
+      rows = self.added_controls.rows(configurable)
     elif page == FeaturePage.HUB:
       rows = [FeatureRow("", "Curve Speed Controller", "Adjust how speed is reduced for curves ahead", page=FeaturePage.CURVE, available=True),
               FeatureRow("", "Speed Limit Controller", "Choose speed-limit sources, offsets, and confirmation behavior", page=FeaturePage.SLC, available=True),
@@ -838,6 +856,8 @@ class FeatureSettingsOwner:
         rows.append(FeatureRow("", "Vehicle Settings", "Configure features supported by your vehicle", page=FeaturePage.VEHICLE, available=True))
       rows.append(FeatureRow("", "Driving Personalities", "Adjust Aggressive, Standard, Relaxed and Traffic profiles",
                              page=FeaturePage.PERSONALITIES, available=True))
+      rows.append(FeatureRow("", "Added Controls", "Driver monitoring & uploads, distance lead speed, Sierra lateral, and gas torque",
+                             page=FeaturePage.ADDED, available=True))
     elif page == FeaturePage.PERSONALITIES:
       title = "Driving Personalities"
       rows = [FeatureRow("", name.title() + " Personality", "", page=name, available=True)
@@ -1295,10 +1315,13 @@ class FeatureSettingsOwner:
                                    default_value=str(round(max(low, min(high, default_curve[index])), 4))))
     fingerprint = self.vehicle_fingerprint()
     rows = [replace(row, vehicle_fingerprint=None if row.key in GLOBAL_BOOL_PREFERENCES or
+                    row.key in ADDED_KEYS or
                     row.key in (PLANNER_SELECTION_KEY, "ShowSpeedLimits", "AlwaysAllowUploads") or
                     row.key.startswith('conditional:') and not row.key.startswith(BUTTON_PREFIX) else fingerprint)
             for row in rows]
     subtitle = (
+        "Driver monitoring & uploads, distance lead speed, Sierra lateral, and GM gas torque parameters."
+        if page == FeaturePage.ADDED else
         "Parked changes apply after the next drive starts. These are explicit manual overrides, separate from Auto Learn."
         if page == FeaturePage.TUNING else
         "Configure features supported by this vehicle. Restart requirements are shown with each setting."
@@ -1330,6 +1353,8 @@ class FeatureSettingsOwner:
 
   def _apply(self, request: FeatureSettingsRequest, *, reset_default: bool = False) -> bool:
     key = request.key
+    if key in ADDED_KEYS:
+      return self.added_controls.apply(request)
     if key == "AlwaysOnLateral" and request.value == "Off":
       def authorized_off():
         return (self.authority("preferences") and self._readable(key) and

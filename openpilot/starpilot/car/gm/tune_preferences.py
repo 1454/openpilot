@@ -1,6 +1,8 @@
 from opendbc.car.gm.long_tune import tune_options
 from openpilot.starpilot.saved_source import read_saved
 
+LB_TO_KG = 0.453592
+
 KEY = "GMLongitudinalTune"
 CHOICES = {0: "Vehicle Default", 1: "ACC Tune"}
 
@@ -108,3 +110,57 @@ class GradeCompensationPreference:
     except (OSError, RuntimeError, TypeError, ValueError):
       self.enabled = True
     return self.enabled
+
+
+class GasModelPreference:
+  """Worker-side live gas torque and grade model overrides; 0 or SafeMode keeps stock."""
+
+  def __init__(self, params):
+    self.params = params
+    self.read_ns = 0
+    self._reset_stock()
+
+  def _reset_stock(self):
+    self.gas_tire_radius = 0.0
+    self.gas_vehicle_mass_kg = 0.0
+    self.gas_drag_coeff = 0.0
+    self.gas_frontal_area = 0.0
+    self.gas_air_density = 0.0
+    self.gas_grade_gain = 1.0
+    self.gas_grade_uphill_cap = 0.20
+
+  def _float_val(self, key: str, default: float) -> float:
+    raw, readable = read_saved(self.params, key, 64)
+    if not readable or raw is None:
+      return default
+    try:
+      val = float(raw)
+    except (TypeError, ValueError, OverflowError):
+      return default
+    import math
+    return val if math.isfinite(val) else default
+
+  def update(self, now_ns):
+    if type(now_ns) is not int or now_ns <= 0:
+      return self
+    if now_ns < self.read_ns:
+      self.read_ns = 0
+      self._reset_stock()
+      return self
+    if self.read_ns == 0 or now_ns - self.read_ns >= 1_000_000_000:
+      self.read_ns = now_ns
+      try:
+        safe, safe_readable = read_saved(self.params, "SafeMode", 8)
+        if not safe_readable or safe not in (None, b"0"):
+          self._reset_stock()
+          return self
+        self.gas_tire_radius = self._float_val("GasTireRadius", 0.0)
+        self.gas_vehicle_mass_kg = self._float_val("GasVehicleWeight", 0.0) * LB_TO_KG
+        self.gas_drag_coeff = self._float_val("GasDragCoeff", 0.0)
+        self.gas_frontal_area = self._float_val("GasFrontalArea", 0.0)
+        self.gas_air_density = self._float_val("GasAirDensity", 0.0)
+        self.gas_grade_gain = self._float_val("GasGradeGain", 100.0) * 0.01
+        self.gas_grade_uphill_cap = self._float_val("GasGradeUphillCap", 0.20)
+      except (OSError, RuntimeError, TypeError, ValueError):
+        self._reset_stock()
+    return self

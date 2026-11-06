@@ -39,7 +39,7 @@ from openpilot.starpilot.ui.sentry_owner import RESET as SENTRY_RESET, SentryOwn
 from openpilot.starpilot.ui.vasm_owner import ANNOTATION as VASM_ANNOTATION, RESET as VASM_RESET, VASMOwner, validated_annotation
 
 
-PAGES = frozenset(("hub", "localization", "developer", "vehicle", "slc", "lane", "lane_change", "profiles", "personalities",
+PAGES = frozenset(("hub", "localization", "developer", "vehicle", "added", "slc", "lane", "lane_change", "profiles", "personalities",
                    "traffic", "aggressive", "standard", "relaxed",
                    "curve", "torque", "tuning", "torque/bluepilot", "aol", "wheel", "appearance", "display", "data", "power", "sounds", "pip", "sentry", "vasm",
                    "conditional", "conditional/cem", "conditional/ccm",
@@ -54,7 +54,7 @@ TTL = 60.0
 CAR_CONTROL_SECTIONS = (
   ("lateral", "Lateral (Steering)", ("aol", "lane_change", "torque", "lane")),
   ("longitudinal", "Longitudinal (Speed & Following)",
-   ("profiles", "conditional", "curve", "slc", "aggressive", "standard", "relaxed", "traffic")),
+   ("profiles", "conditional", "curve", "slc", "added", "aggressive", "standard", "relaxed", "traffic")),
   ("wheel", "Wheel Controls", ("wheel",)),
   ("visual", "Visual (Display & UI)", ("appearance", "pip")),
   ("sounds", "Sounds & Alerts", ("sounds",)),

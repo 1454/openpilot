@@ -7,7 +7,7 @@ from dataclasses import replace
 from openpilot.starpilot.speed_limits.acceptance import Candidate, IdentityKind, Observation, ObservationIdentity, ObservationKind
 from openpilot.starpilot.speed_limits.acceptance import (AcceptedLimit, ActionKind, AdoptRequest, Authority, DriverAction,
                                                         LongitudinalOwner, Mode, Policy, new_session, step)
-from openpilot.starpilot.speed_limits.selection import SelectionMode, SelectionPolicy, Source, select_limit
+from openpilot.starpilot.speed_limits.selection import MPH_TO_MPS, SelectionMode, SelectionPolicy, Source, select_limit
 
 
 def geographic(value):
@@ -27,7 +27,7 @@ def policy(mode=SelectionMode.ORDERED, slots=(Source.VISION, Source.MAP), online
 
 class TestSourceSelection(unittest.TestCase):
   def test_priority_order_and_unused_source(self):
-    supplied = observations(dashboard=30, map=20, vision=10, online=40)
+    supplied = observations(dashboard=30, map=20, vision=18, online=40)
     for first, second in permutations((Source.DASHBOARD, Source.MAP, Source.VISION), 2):
       with self.subTest(first=first, second=second):
         selected = select_limit(supplied, policy(slots=(first, second)))
@@ -37,6 +37,15 @@ class TestSourceSelection(unittest.TestCase):
         missing[first] = Observation(ObservationKind.ABSENT)
         self.assertEqual(select_limit(missing, policy(slots=(first, second))).selected_source, second)
     self.assertEqual(select_limit(supplied, policy(slots=(Source.MAP, Source.MAP))).selected_source, Source.MAP)
+
+  def test_vision_defers_to_map_when_10_mph_or_more_below(self):
+    for vision_mph, expected in ((45, Source.MAP), (35, Source.MAP), (46, Source.VISION), (65, Source.VISION)):
+      with self.subTest(vision_mph=vision_mph):
+        supplied = observations(map=55 * MPH_TO_MPS, vision=vision_mph * MPH_TO_MPS)
+        selected = select_limit(supplied, policy(slots=(Source.VISION, Source.MAP)))
+        self.assertEqual(selected.selected_source, expected)
+    supplied = observations(dashboard=45 * MPH_TO_MPS, map=55 * MPH_TO_MPS, vision=45 * MPH_TO_MPS)
+    self.assertEqual(select_limit(supplied, policy(slots=(Source.DASHBOARD, Source.MAP))).selected_source, Source.DASHBOARD)
 
   def test_extrema_vision_requires_explicit_slot(self):
     for mode, vision in ((SelectionMode.HIGHEST, 40), (SelectionMode.LOWEST, 5)):

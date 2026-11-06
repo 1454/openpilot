@@ -40,6 +40,12 @@ from opendbc.car.gm.values import malibu_hybrid_profile, is_volt_sdgm_accepted_e
 from opendbc.car.gm.bolt_cc import BoltCcOwner, BoltCcProfile, auxiliary_messages
 from opendbc.car.gm.volt_cc_pedal import VoltCcPedalCommand
 from opendbc.car.gm.long_tune import acc_tune_limits
+from openpilot.selfdrive.controls.lib.gas_command import (
+  grade_settings,
+  limit_grade_feedforward,
+  resolved_gas_model,
+  stock_drag_and_area,
+)
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
 NetworkLocation = structs.CarParams.NetworkLocation
@@ -82,19 +88,21 @@ def bolt_pedal_launch_gas(accel, speed, orientation, cp, *, acc_tune=False):
 
 
 def bolt_euv_demands(accel: float, speed: float, orientation_ned, mass: float,
-                     wheelbase: float, max_brake: int, *, acc_tune=False) -> tuple[int, int]:
+                     wheelbase: float, max_brake: int, *, acc_tune=False, gas_model=None) -> tuple[int, int]:
   """Original ordinary camera Bolt torque/grade law in current DBC engineering units."""
+  stock_cd, stock_area = stock_drag_and_area(False, wheelbase)
+  stock_radius = 0.075 * wheelbase + 0.1453
+  mass, tire_radius, coeff_drag, frontal, air_density = resolved_gas_model(
+    mass, stock_radius, stock_cd, stock_area, 1.225, gas_model
+  )
+  grade_gain, grade_uphill_cap = grade_settings(gas_model)
   pitch_accel = 0.0
   if speed > 0.25 and orientation_ned is not None and len(orientation_ned) == 3:
     pitch = orientation_ned[1]
     if math.isfinite(pitch):
-      pitch_accel = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY
-      if pitch_accel > 0.0 and accel > 0.0:
-        pitch_accel = 0.0
-      else:
-        pitch_accel = min(pitch_accel, 0.20)
-  tire_radius = 0.075 * wheelbase + 0.1453
-  drag = 0.5 * 0.30 * (1.05 * wheelbase + 0.0679) * 1.225 * speed ** 2
+      pitch_accel = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * grade_gain
+      pitch_accel = limit_grade_feedforward(accel, pitch_accel, grade_uphill_cap)
+  drag = 0.5 * coeff_drag * frontal * air_density * speed ** 2
   maximum = acc_tune_limits(speed, 2., 6150, 6150)[0] if acc_tune else 2.
   scaled_torque = tire_radius * (mass * float(np.clip(accel + pitch_accel, -4.0, maximum)) + drag) + 6150
   gas = int(round(np.clip(scaled_torque, 5610, 8848))) - 6150
@@ -108,19 +116,23 @@ def bolt_euv_demands(accel: float, speed: float, orientation_ned, mass: float,
 
 def volt_demands(accel: float, speed: float, orientation_ned, stopping_speed: float,
                          mass: float, wheelbase: float, accel_min: float, accel_max: float,
-                         max_brake: int, *, min_gas: int = -650, max_gas: int = 2041, inactive_gas: int = -650) -> tuple[int, int]:
+                         max_brake: int, *, min_gas: int = -650, max_gas: int = 2041, inactive_gas: int = -650,
+                         gas_model=None) -> tuple[int, int]:
   """Original Volt demand law in current normalized gas units."""
+  stock_cd, stock_area = stock_drag_and_area(False, wheelbase)
+  stock_radius = 0.075 * wheelbase + 0.1453
+  mass, _tire_radius, coeff_drag, frontal, air_density = resolved_gas_model(
+    mass, stock_radius, stock_cd, stock_area, 1.225, gas_model
+  )
+  grade_gain, grade_uphill_cap = grade_settings(gas_model)
   pitch_accel = 0.0
   if speed > stopping_speed and orientation_ned is not None and len(orientation_ned) == 3:
     pitch = orientation_ned[1]
     if math.isfinite(pitch):
-      pitch_accel = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY
-      if pitch_accel > 0.0 and accel > 0.0:
-        pitch_accel = 0.0
-      else:
-        pitch_accel = min(pitch_accel, 0.20)
+      pitch_accel = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * grade_gain
+      pitch_accel = limit_grade_feedforward(accel, pitch_accel, grade_uphill_cap)
 
-  aero_accel = 0.5 * 0.30 * (1.05 * wheelbase + 0.0679) * 1.225 * speed ** 2 / mass
+  aero_accel = 0.5 * coeff_drag * frontal * air_density * speed ** 2 / mass
   gas_accel = float(np.clip(accel + aero_accel + pitch_accel, accel_min, accel_max))
   brake_accel = float(np.clip(accel + aero_accel + pitch_accel * np.interp(speed, [5.0, 10.0], [0.0, 1.0]),
                               accel_min, accel_max))
@@ -133,16 +145,14 @@ def volt_demands(accel: float, speed: float, orientation_ned, stopping_speed: fl
 
 
 def volt_grade_demands(accel: float, speed: float, orientation_ned, stopping_speed: float,
-                       accel_min: float, accel_max: float) -> tuple[float, float]:
+                       accel_min: float, accel_max: float, *, gas_model=None) -> tuple[float, float]:
+  grade_gain, grade_uphill_cap = grade_settings(gas_model)
   pitch_accel = 0.0
   if speed > stopping_speed and orientation_ned is not None and len(orientation_ned) == 3:
     pitch = orientation_ned[1]
     if math.isfinite(pitch):
-      pitch_accel = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY
-      if pitch_accel > 0.0 and accel > 0.0:
-        pitch_accel = 0.0
-      else:
-        pitch_accel = min(pitch_accel, 0.20)
+      pitch_accel = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * grade_gain
+      pitch_accel = limit_grade_feedforward(accel, pitch_accel, grade_uphill_cap)
   gas_demand = float(np.clip(accel + pitch_accel, accel_min, accel_max))
   brake_scale = float(np.interp(speed, [5.0, 10.0], [0.0, 1.0]))
   brake_demand = float(np.clip(accel + pitch_accel * brake_scale, accel_min, accel_max))
@@ -231,19 +241,23 @@ def bolt_acc_pedal_friction_brake(accel: float, speed: float, stopping: bool, lo
   return brake, True
 
 
-def suburban_gateway_demands(accel, speed, orientation, cp, *, acc_tune=False):
+def suburban_gateway_demands(accel, speed, orientation, cp, *, acc_tune=False, gas_model=None):
   """Normal Suburban gateway demand, converted to current gas units."""
+  stock_cd, stock_area = stock_drag_and_area(False, cp.wheelbase)
+  stock_radius = 0.075 * cp.wheelbase + 0.1453
+  mass, radius, coeff_drag, frontal, air_density = resolved_gas_model(
+    cp.mass, stock_radius, stock_cd, stock_area, 1.225, gas_model
+  )
+  grade_gain, grade_uphill_cap = grade_settings(gas_model)
   pitch = 0.0
   if orientation is not None and len(orientation) == 3 and speed > 0.5 and math.isfinite(orientation[1]):
-    pitch = math.sin(orientation[1]) * ACCELERATION_DUE_TO_GRAVITY
-    pitch = 0.0 if pitch > 0.0 and accel > 0.0 else min(pitch, 0.20)
-  radius = 0.075 * cp.wheelbase + 0.1453
-  frontal = 1.05 * cp.wheelbase + 0.0679
+    pitch = math.sin(orientation[1]) * ACCELERATION_DUE_TO_GRAVITY * grade_gain
+    pitch = limit_grade_feedforward(accel, pitch, grade_uphill_cap)
   maximum = acc_tune_limits(speed, 2., 6150, 6150)[0] if acc_tune else 2.
   demand = float(np.clip(accel + pitch, -4.0, maximum))
-  torque = radius * (cp.mass * demand + 0.5 * 0.30 * frontal * 1.225 * speed ** 2)
+  torque = radius * (mass * demand + 0.5 * coeff_drag * frontal * air_density * speed ** 2)
   gas = int(round(np.clip(torque + 6150, 5500, 7168))) - 6150
-  brake = int(round(np.interp(min(torque / (radius * cp.mass), 0), [-4.0, 0.0], [400, 0])))
+  brake = int(round(np.interp(min(torque / (radius * mass), 0), [-4.0, 0.0], [400, 0])))
   return (-650 if brake > 0 else gas), brake
 
 
@@ -265,6 +279,18 @@ class CarController(CarControllerBase):
     super().__init__(dbc_names, CP)
     self.long_pitch = True
     self.long_pitch_input = None
+    self.gas_model_input = None
+    self.gas_model = None
+    self.mass = CP.mass
+    self.tireRadius = 0.075 * CP.wheelbase + 0.1453
+    self.coeffDrag, self.frontalArea = stock_drag_and_area(
+      CP.carFingerprint in (CAR.CHEVROLET_SILVERADO, CAR.CHEVROLET_SILVERADO_CC), CP.wheelbase)
+    self.airDensity = 1.225
+    self._stock_gas_mass = self.mass
+    self._stock_tire_radius = self.tireRadius
+    self._stock_coeff_drag = self.coeffDrag
+    self._stock_frontal_area = self.frontalArea
+    self._stock_air_density = self.airDensity
     self.bolt_removed_cancel_credit_used = 0
     self.bolt_pedal_removed = is_bolt_pedal_removed_profile(CP) or is_bolt_pedal_removed_profile(CP, stock_only=True)
     self.bolt_steering_ack_counter = is_bolt_pedal_profile(CP) or is_bolt_pedal_profile(CP, stock_only=True)
@@ -530,6 +556,13 @@ class CarController(CarControllerBase):
     if self.truck_tuning is not None:
       self.truck_tuning.enabled = bool(self.truck_tuning_input is not None and
                                        self.truck_tuning_input.update(now_nanos))
+    if self.gas_model_input is not None:
+      self.gas_model = self.gas_model_input.update(now_nanos)
+    if self.frame % 4 == 0:
+      self.mass, self.tireRadius, self.coeffDrag, self.frontalArea, self.airDensity = resolved_gas_model(
+        self._stock_gas_mass, self._stock_tire_radius, self._stock_coeff_drag,
+        self._stock_frontal_area, self._stock_air_density, self.gas_model,
+      )
     actuators = CC.actuators
     hud_control = CC.hudControl
     hud_alert = hud_control.visualAlert
@@ -793,7 +826,8 @@ class CarController(CarControllerBase):
         if ready:
           pedal, self.apply_gas, self.apply_brake = self.silverado_pedal_command.update(
             actuators.accel, CC.longActive, CS.out, stopping=actuators.longControlState == LongCtrlState.stopping,
-            resume=CC.cruiseControl.resume, orientation=CC.orientationNED if long_pitch else None)
+            resume=CC.cruiseControl.resume, orientation=CC.orientationNED if long_pitch else None,
+            gas_model=self.gas_model)
         else:
           if not sources_ready:
             self.silverado_pedal_command.prime_recovery()
@@ -983,25 +1017,30 @@ class CarController(CarControllerBase):
           else:
             if self.CP.carFingerprint == CAR.CHEVROLET_SUBURBAN:
               self.apply_gas, self.apply_brake = suburban_gateway_demands(
-                actuators.accel, CS.out.vEgo, CC.orientationNED if long_pitch else None, self.CP, acc_tune=self.gm_acc_tune)
+                actuators.accel, CS.out.vEgo, CC.orientationNED if long_pitch else None, self.CP,
+                acc_tune=self.gm_acc_tune, gas_model=self.gas_model)
             elif self.ordinary_camera_long:
               self.apply_gas, self.apply_brake = ascm_demands(
                 actuators.accel, CS.out.vEgo, CC.orientationNED if long_pitch else None, self.CP,
                 min_gas=-540, max_gas=2698, inactive_gas=-500, brake_threshold=0.0, acc_tune=self.gm_acc_tune,
                 truck_tuning=self.truck_tuning, lead_visible=CC.hudControl.leadVisible,
-                set_speed_error=max(CC.hudControl.setSpeed - CS.out.vEgo, 0.0), stopping=stopping)
+                set_speed_error=max(CC.hudControl.setSpeed - CS.out.vEgo, 0.0), stopping=stopping,
+                gas_model=self.gas_model)
             elif self.ordinary_sdgm_long:
               self.apply_gas, self.apply_brake = ascm_demands(
                 actuators.accel, CS.out.vEgo, CC.orientationNED, self.CP,
                 min_gas=-540, max_gas=2698, inactive_gas=-500, brake_threshold=0.0,
-                stop_speed=0.35 if self.CP.carFingerprint == CAR.CHEVROLET_BLAZER else 0.25, acc_tune=self.gm_acc_tune)
+                stop_speed=0.35 if self.CP.carFingerprint == CAR.CHEVROLET_BLAZER else 0.25, acc_tune=self.gm_acc_tune,
+                gas_model=self.gas_model)
             elif self.ordinary_ascm_long:
               self.apply_gas, self.apply_brake = ascm_demands(
-                actuators.accel, CS.out.vEgo, CC.orientationNED if long_pitch else None, self.CP, acc_tune=self.gm_acc_tune)
+                actuators.accel, CS.out.vEgo, CC.orientationNED if long_pitch else None, self.CP,
+                acc_tune=self.gm_acc_tune, gas_model=self.gas_model)
             elif self.bolt_euv_long:
               self.apply_gas, self.apply_brake = bolt_euv_demands(
                 actuators.accel, CS.out.vEgo, CC.orientationNED if long_pitch else None,
-                self.CP.mass, self.CP.wheelbase, self.params.MAX_BRAKE, acc_tune=self.gm_acc_tune)
+                self.CP.mass, self.CP.wheelbase, self.params.MAX_BRAKE, acc_tune=self.gm_acc_tune,
+                gas_model=self.gas_model)
             elif self.volt_gateway_long or self.volt_ascm_long or self.volt_camera_long or self.volt_sdgm_long:
               self.apply_gas, self.apply_brake = volt_demands(
                 actuators.accel, CS.out.vEgo, CC.orientationNED if long_pitch else None,
@@ -1009,7 +1048,8 @@ class CarController(CarControllerBase):
                 self.CP.mass, self.CP.wheelbase, self.params.ACCEL_MIN, self.params.ACCEL_MAX, self.params.MAX_BRAKE,
                 min_gas=-540 if self.volt_camera_long or self.volt_sdgm_long else -650,
                 max_gas=2698 if self.volt_camera_long or self.volt_sdgm_long else 2041,
-                inactive_gas=-500 if self.volt_camera_long or self.volt_sdgm_long else -650)
+                inactive_gas=-500 if self.volt_camera_long or self.volt_sdgm_long else -650,
+                gas_model=self.gas_model)
             else:
               gas_demand = brake_demand = (min(actuators.accel, acc_tune_limits(CS.out.vEgo, self.params.ACCEL_MAX, 6150, 6150)[0])
                                            if self.gm_acc_tune else actuators.accel)
@@ -1017,7 +1057,7 @@ class CarController(CarControllerBase):
                 gas_demand, brake_demand = volt_grade_demands(
                   actuators.accel, CS.out.vEgo, CC.orientationNED if long_pitch else None,
                   VOLT_GATEWAY_GRADE_STOP_SPEED if self.CP.networkLocation == NetworkLocation.gateway else VOLT_CAMERA_GRADE_STOP_SPEED,
-                  self.params.ACCEL_MIN, self.params.ACCEL_MAX)
+                  self.params.ACCEL_MIN, self.params.ACCEL_MAX, gas_model=self.gas_model)
               self.apply_gas = float(np.interp(gas_demand, self.params.GAS_LOOKUP_BP, self.params.GAS_LOOKUP_V))
               self.apply_brake = int(round(np.interp(brake_demand, self.params.BRAKE_LOOKUP_BP, self.params.BRAKE_LOOKUP_V)))
             if stopping:

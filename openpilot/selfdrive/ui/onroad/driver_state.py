@@ -71,6 +71,7 @@ class DriverStateRenderer(Widget):
 
     # Load the driver face icon
     self.dm_img = gui_app.texture("icons/driver_face.png", IMG_SIZE, IMG_SIZE)
+    self.monitoring_ended = True
 
     # Colors
     self.white_color = rl.Color(255, 255, 255, 255)
@@ -83,7 +84,7 @@ class DriverStateRenderer(Widget):
 
   def _render(self, rect):
     # Set opacity based on active state
-    opacity = 0.65 if self.is_active else 0.2
+    opacity = 0.65 if (self.is_active or self.monitoring_ended) else 0.2
 
     # Draw background circle
     rl.draw_circle(int(self.position_x), int(self.position_y), BTN_SIZE // 2, rl.Color(0, 0, 0, 70))
@@ -105,6 +106,25 @@ class DriverStateRenderer(Widget):
       rl.draw_spline_linear(self.h_arc_lines, len(self.h_arc_lines), self.h_arc_data.thickness, self.arc_color)
     if self.v_arc_data:
       rl.draw_spline_linear(self.v_arc_lines, len(self.v_arc_lines), self.v_arc_data.thickness, self.arc_color)
+    if self.monitoring_ended:
+      self._draw_monitoring_off_mark(opacity)
+
+  def _draw_monitoring_off_mark(self, opacity: float):
+    alpha = int(255 * opacity)
+    if alpha < 8:
+      return
+    span = BTN_SIZE * 0.34
+    cx, cy = self.position_x, self.position_y
+    start_a = rl.Vector2(cx - span, cy - span)
+    end_a = rl.Vector2(cx + span, cy + span)
+    start_b = rl.Vector2(cx - span, cy + span)
+    end_b = rl.Vector2(cx + span, cy - span)
+    outline = rl.Color(20, 0, 0, alpha)
+    red = rl.Color(230, 36, 36, alpha)
+    rl.draw_line_ex(start_a, end_a, 14.0, outline)
+    rl.draw_line_ex(start_b, end_b, 14.0, outline)
+    rl.draw_line_ex(start_a, end_a, 8.0, red)
+    rl.draw_line_ex(start_b, end_b, 8.0, red)
 
   def _update_state(self):
     """Update the driver monitoring state based on model data"""
@@ -116,6 +136,10 @@ class DriverStateRenderer(Widget):
     dm_state = sm["driverMonitoringState"]
     self.is_active = dm_state.activePolicy == log.DriverMonitoringState.MonitoringPolicy.vision
     self.is_rhd = dm_state.isRHD
+    try:
+      self.monitoring_ended = bool(ui_state.params.get_bool("EndDriverMonitoring"))
+    except Exception:
+      pass
 
     # Update fade state (smoother transition between active/inactive)
     fade_target = 0.0 if self.is_active else 0.5

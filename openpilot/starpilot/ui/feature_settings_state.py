@@ -46,6 +46,7 @@ def is_long_confirm_action(key: str) -> bool:
 class FeaturePage(StrEnum):
   HUB = "hub"
   VEHICLE = "vehicle"
+  ADDED = "added"
   SLC = "slc"
   LANE = "lane"
   LANE_CHANGE = "lane_change"
