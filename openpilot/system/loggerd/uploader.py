@@ -305,8 +305,7 @@ def main(exit_event: threading.Event | None = None) -> None:
     sm.update(0)
     always_allow_uploads = params.get_bool("AlwaysAllowUploads")
     uploads_stopped = (
-      not always_allow_uploads and
-      (params.get_bool("EndDriverMonitoring") or params.get_bool("NoUploads"))
+      params.get_bool("EndDriverMonitoring") or params.get_bool("NoUploads")
     )
     offroad = params.get_bool("IsOffroad")
     network_type = sm['deviceState'].networkType if not force_wifi else NetworkType.wifi

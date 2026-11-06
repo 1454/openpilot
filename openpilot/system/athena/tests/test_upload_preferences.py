@@ -20,6 +20,8 @@ class UploadPreferencesTest(unittest.TestCase):
     self.addCleanup(temporary.cleanup)
     self.root = Path(temporary.name)
     self.params = Params(str(self.root / 'params'))
+    self.params.put_bool('EndDriverMonitoring', False, block=True)
+    self.params.put_bool('NoUploads', False, block=True)
     self.file = self.root / 'rlog.zst'
     self.file.write_bytes(b'log')
 

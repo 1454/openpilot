@@ -90,6 +90,12 @@ class TestUploadPreferences(unittest.TestCase):
           self.assertEqual(state.calls, [(2, not allow), (2, not allow)])
           self.assertEqual(state.phone_checks, [0, 1, 2])
 
+  def test_dm_upload_stop_blocks_uploads_even_with_always_allow_uploads(self):
+    for allow in (False, True):
+      with self.subTest(allow=allow):
+        state = self.run_loop([{'stop_uploads': True, 'allow': allow, 'metered': False}])
+        self.assertEqual(state.calls, [])
+
   def test_typed_persistent_default_is_off(self):
     keys = Path(__file__).parents[3].joinpath('common/params_keys.h').read_text()
     self.assertIn('{"AlwaysAllowUploads", {PERSISTENT, BOOL, "0"}}', keys)

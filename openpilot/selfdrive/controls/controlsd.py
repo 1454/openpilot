@@ -318,9 +318,10 @@ class Controls:
         self.VM.m, self.VM.j, self.VM.aF, self.VM.aR, self.VM.cF_orig, self.VM.cR_orig,
       )
     stock_m, stock_j, stock_aF, stock_aR, stock_cF, stock_cR = self._stock_vehicle_geometry
+    stock_ratio = stock_aF / self.CP.wheelbase if self.CP.wheelbase > 0.5 else 0.5
 
     ratio = self._center_to_front_ratio
-    if 0.2 < ratio < 0.9:
+    if 0.2 < ratio < 0.9 and not (self._sierra_lateral and abs(ratio - stock_ratio) < 1e-4):
       center = self.CP.wheelbase * ratio
     elif self._sierra_lateral:
       center = self.CP.wheelbase * SIERRA_CENTER_TO_FRONT_RATIO

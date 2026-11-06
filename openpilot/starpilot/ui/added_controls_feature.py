@@ -151,6 +151,13 @@ class AddedControlsFeature:
         parsed = float(raw.decode("utf-8"))
         if not math.isfinite(parsed):
           valid = False
+        elif key == "CenterToFrontRatio":
+          if parsed == 0.0 or (self._sierra_enabled() and abs(parsed - round(self._stock_center_ratio(), 2)) < 1e-4):
+            display_num = stock_num
+          elif low <= parsed <= high:
+            display_num = parsed
+          else:
+            valid = False
         elif key in ("GasGradeGain", "GasGradeUphillCap"):
           if low <= parsed <= high:
             display_num = parsed
@@ -285,13 +292,9 @@ class AddedControlsFeature:
       return False
     if not math.isfinite(number):
       return False
-    stock_num = self._stock_display_number(key)
-    if key not in ("GasGradeGain", "GasGradeUphillCap") and (number == 0.0 or abs(number - stock_num) < 1e-6):
-      encoded = b"0"
-    else:
-      if not low <= number <= high:
-        return False
-      encoded = _fmt(number, decimals).encode("utf-8")
+    if not low <= number <= high:
+      return False
+    encoded = _fmt(number, decimals).encode("utf-8")
 
     def authorized_num() -> bool:
       if not self.owner.authority("preferences"):
