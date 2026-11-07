@@ -220,6 +220,17 @@ SAFE_MODE_MANAGED_KEYS = (
   "GMPedalLongitudinal",
   "GMDashSpoofOffsets",
   "LongPitch",
+  "EndDriverMonitoring",
+  "SierraLateral",
+  "LeadDistanceVelocity",
+  "GasTireRadius",
+  "CenterToFrontRatio",
+  "GasVehicleWeight",
+  "GasDragCoeff",
+  "GasFrontalArea",
+  "GasAirDensity",
+  "GasGradeGain",
+  "GasGradeUphillCap",
 )
 
 SAFE_MODE_PRESERVED_KEYS = (

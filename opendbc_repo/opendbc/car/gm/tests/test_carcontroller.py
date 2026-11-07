@@ -1059,6 +1059,11 @@ def test_limit_grade_feedforward_caps_uphill_hold():
   assert limit_grade_feedforward(-0.10, 0.50) == pytest.approx(0.20)
 
 
+def test_limit_grade_feedforward_uses_a_custom_uphill_cap():
+  assert limit_grade_feedforward(0.0, 0.50, 0.35) == pytest.approx(0.35)
+  assert limit_grade_feedforward(0.0, 0.10, 0.35) == pytest.approx(0.10)
+
+
 def test_limit_grade_feedforward_keeps_downhill_help():
   assert limit_grade_feedforward(0.40, -0.30) == pytest.approx(-0.30)
   assert limit_grade_feedforward(-0.20, -0.30) == pytest.approx(-0.30)

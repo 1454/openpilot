@@ -42,6 +42,7 @@ SAME_LIMIT_TOLERANCE = 1.0
 VISION_LARGE_REFERENCE_SPEED_DELTA = 30 * CV.MPH_TO_MS
 VISION_LARGE_SET_SPEED_MIN_SUPPORT = 3
 VISION_SUPPORT_SPEED_TOLERANCE = 0.5 * CV.MPH_TO_MS
+VISION_MAP_DEFER_DELTA = 10 * CV.MPH_TO_MS
 
 
 class SpeedLimitController:
@@ -204,6 +205,8 @@ class SpeedLimitController:
       source = min(valid, key=valid.get)
     else:
       source = next((name for name in priorities if name in valid), SOURCE_NONE)
+      if source == SOURCE_VISION and SOURCE_MAP in valid and valid[SOURCE_MAP] - valid[SOURCE_VISION] >= VISION_MAP_DEFER_DELTA - 1e-6:
+        source = SOURCE_MAP
     return source, valid.get(source, 0.0)
 
   def _apply_mapbox_filler(self, source, limit, now, time_validated, v_ego, sm):

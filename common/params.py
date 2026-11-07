@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from enum import IntEnum, IntFlag
+import contextlib
+import fcntl
+import os
 from pathlib import Path
+import re
 import tempfile
 
 SETTINGS_SIMPLE = 0
@@ -24,6 +28,42 @@ def _load_settings_tiers() -> dict[str, int]:
 
 
 _SETTINGS_TIERS = _load_settings_tiers()
+
+
+def _load_header_keys() -> dict[str, dict]:
+  """Keys declared in params_keys.h. Used to serve keys a stale compiled binding does not know."""
+  params_keys = Path(__file__).with_name("params_keys.h")
+  if not params_keys.exists():
+    return {}
+
+  keys = {}
+  token = re.compile(r'"[^"]*"|[^,\s][^,]*')
+  for line in params_keys.read_text(encoding="utf-8", errors="ignore").splitlines():
+    match = re.match(r'\s*\{"(\w+)",\s*\{(.*)\}\},?\s*$', line)
+    if not match:
+      continue
+    fields = [t.strip() for t in token.findall(match.group(2))]
+    if len(fields) < 2:
+      continue
+    default = fields[2].strip('"') if len(fields) > 2 and fields[2].startswith('"') else None
+    stock = fields[3].strip('"') if len(fields) > 3 and fields[3].startswith('"') else None
+    try:
+      tuning = int(fields[4]) if len(fields) > 4 else 0
+    except ValueError:
+      tuning = 0
+    keys[match.group(1)] = {
+      "flags": [f.strip() for f in fields[0].split("|")],
+      "type": fields[1],
+      "default": default,
+      "stock": stock,
+      "tuning": tuning,
+      "tier": SETTINGS_SIMPLE if len(fields) > 5 and "SETTINGS_SIMPLE" in fields[5] else SETTINGS_ADVANCED,
+    }
+  return keys
+
+
+_HEADER_KEYS = _load_header_keys()
+_EXTRA_KEY_CACHE: dict[str, bool] = {}
 
 try:
   from openpilot.common.params_pyx import Params as _Params, ParamKeyFlag, ParamKeyType, UnknownKeyName
@@ -211,13 +251,216 @@ else:
   assert UnknownKeyName
 
   class Params(_Params):
+    # A compiled binding built before a key was added does not know that key.
+    # Keys declared in params_keys.h but missing from the binding are stored as
+    # plain files in the same params directory instead of failing.
+    def __init__(self, d="", *, memory=False, return_defaults=False):
+      # The binding's own return_defaults field is private to Cython.
+      self._extra_return_defaults = bool(return_defaults or memory)
+
+    def _extra_name(self, key) -> str | None:
+      name = key.decode("utf-8", errors="ignore") if isinstance(key, bytes) else str(key)
+      cached = _EXTRA_KEY_CACHE.get(name)
+      if cached is None:
+        try:
+          _Params.check_key(self, name)
+          cached = False
+        except UnknownKeyName:
+          cached = name in _HEADER_KEYS
+        _EXTRA_KEY_CACHE[name] = cached
+      return name if cached else None
+
+    def _extra_type(self, name):
+      return getattr(ParamKeyType, _HEADER_KEYS[name]["type"], ParamKeyType.STRING)
+
+    def _extra_path(self, name) -> str:
+      return self.get_param_path(name)
+
+    def _extra_read(self, name) -> bytes:
+      try:
+        with open(self._extra_path(name), "rb") as f:
+          return f.read()
+      except OSError:
+        return b""
+
+    @contextlib.contextmanager
+    def _extra_lock(self):
+      # Same lock file the C++ side takes for writes and clear_all.
+      lock_path = os.path.join(os.path.dirname(self.get_param_path()), ".lock")
+      fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
+      try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+      finally:
+        try:
+          fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+          os.close(fd)
+
+    def _extra_write(self, name, data: bytes, locked: bool = False) -> None:
+      path = self._extra_path(name)
+      directory = os.path.dirname(path)
+      with contextlib.nullcontext() if locked else self._extra_lock():
+        fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{name}.")
+        try:
+          with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+          os.chmod(tmp, 0o666)
+          os.replace(tmp, path)
+        except BaseException:
+          with contextlib.suppress(OSError):
+            os.remove(tmp)
+          raise
+        dir_fd = os.open(directory, os.O_RDONLY)
+        try:
+          os.fsync(dir_fd)
+        finally:
+          os.close(dir_fd)
+
+    def _extra_default_bytes(self, name):
+      default = _HEADER_KEYS[name]["default"]
+      return default.encode("utf-8") if default is not None else None
+
+    def check_key(self, key):
+      name = self._extra_name(key)
+      if name is not None:
+        return name.encode("utf-8")
+      return super().check_key(key)
+
+    def get_type(self, key):
+      name = self._extra_name(key)
+      if name is not None:
+        return self._extra_type(name)
+      return super().get_type(key)
+
+    def get_default_value(self, key):
+      name = self._extra_name(key)
+      if name is not None:
+        default = self._extra_default_bytes(name)
+        return self._cpp2python(self._extra_type(name), default, None, name) if default is not None else None
+      return super().get_default_value(key)
+
+    def get_stock_value(self, key):
+      name = self._extra_name(key)
+      if name is not None:
+        stock = _HEADER_KEYS[name]["stock"]
+        return self._cpp2python(self._extra_type(name), stock.encode("utf-8"), None, name) if stock is not None else None
+      return super().get_stock_value(key)
+
+    def get_key_flag(self, key):
+      name = self._extra_name(key)
+      if name is not None:
+        flag = 0
+        for flag_name in _HEADER_KEYS[name]["flags"]:
+          flag |= int(getattr(ParamKeyFlag, flag_name, 0))
+        return flag
+      return super().get_key_flag(key)
+
+    def get_tuning_level(self, key):
+      name = self._extra_name(key)
+      if name is not None:
+        return _HEADER_KEYS[name]["tuning"]
+      return super().get_tuning_level(key)
+
+    def cpp2python(self, key, value):
+      name = self._extra_name(key)
+      if name is not None:
+        return self._cpp2python(self._extra_type(name), value, None, name)
+      return super().cpp2python(key, value)
+
+    def _extra_names(self) -> list[str]:
+      known = {k.decode("utf-8", errors="ignore") if isinstance(k, bytes) else str(k) for k in _Params.all_keys(self)}
+      return [name for name in _HEADER_KEYS if name not in known]
+
+    def clear_all(self, tx_flag=ParamKeyFlag.ALL):
+      # The C++ clear_all deletes every file whose key it does not know, which
+      # would wipe the fallback files. Keep the ones that are not being cleared.
+      keep = {}
+      for name in self._extra_names():
+        flag = 0
+        for flag_name in _HEADER_KEYS[name]["flags"]:
+          flag |= int(getattr(ParamKeyFlag, flag_name, 0))
+        if flag & int(tx_flag):
+          continue
+        raw = self._extra_read(name)
+        if raw:
+          keep[name] = raw
+      super().clear_all(tx_flag)
+      if keep:
+        with self._extra_lock():
+          for name, raw in keep.items():
+            self._extra_write(name, raw, locked=True)
+
+    def all_keys(self):
+      keys = list(super().all_keys())
+      known = {k.decode("utf-8", errors="ignore") if isinstance(k, bytes) else str(k) for k in keys}
+      keys.extend(name.encode("utf-8") for name in _HEADER_KEYS if name not in known)
+      return keys
+
+    def put(self, key, dat):
+      name = self._extra_name(key)
+      if name is not None:
+        value_type = self._extra_type(name)
+        data = self.python2cpp(type(dat), value_type, dat, name)
+        self._extra_write(name, data.encode("utf-8") if isinstance(data, str) else data)
+        return
+      super().put(key, dat)
+
+    def put_nonblocking(self, key, dat):
+      if self._extra_name(key) is not None:
+        self.put(key, dat)
+        return
+      super().put_nonblocking(key, dat)
+
+    def put_bool(self, key, val):
+      name = self._extra_name(key)
+      if name is not None:
+        self._extra_write(name, b"1" if val else b"0")
+        return
+      super().put_bool(key, val)
+
+    def put_bool_nonblocking(self, key, val):
+      if self._extra_name(key) is not None:
+        self.put_bool(key, val)
+        return
+      super().put_bool_nonblocking(key, val)
+
+    def remove(self, key):
+      name = self._extra_name(key)
+      if name is not None:
+        with self._extra_lock():
+          with contextlib.suppress(OSError):
+            os.remove(self._extra_path(name))
+        return
+      super().remove(key)
+
     def get_settings_tier(self, key):
+      name = self._extra_name(key)
+      if name is not None:
+        return _HEADER_KEYS[name]["tier"]
       try:
         return super().get_settings_tier(key)
       except AttributeError:
         return _SETTINGS_TIERS.get(self.check_key(key), SETTINGS_ADVANCED)
 
     def get(self, key, block=False, return_default=False, encoding=None, default=None):
+      name = self._extra_name(key)
+      if name is not None:
+        value_type = self._extra_type(name)
+        use_default = return_default or (getattr(self, "_extra_return_defaults", False) and not block)
+        default_bytes = self._extra_default_bytes(name) if use_default else None
+        raw = self._extra_read(name)
+        value = self._cpp2python(value_type, raw if raw != b"" else default_bytes, default_bytes, name)
+        if value is None:
+          return default
+        if encoding is not None and isinstance(value, bytes):
+          try:
+            return value.decode(encoding)
+          except Exception:
+            return value.decode("utf-8", errors="replace")
+        return value
       try:
         value = super().get(key, block=block, return_default=return_default)
       except UnknownKeyName:
@@ -232,13 +475,10 @@ else:
       return value
 
     def get_bool(self, key, block=False, default=False):
-      try:
-        result = super().get(key, block=block, return_default=True)
-        if result is None:
-          return bool(default)
-        return bool(result)
-      except UnknownKeyName:
+      result = self.get(key, block=block, return_default=True)
+      if result is None:
         return bool(default)
+      return bool(result)
 
     def get_int(self, key, block=False, return_default=False, default=0):
       val = self.get(key, block=block, return_default=return_default, encoding="utf-8")

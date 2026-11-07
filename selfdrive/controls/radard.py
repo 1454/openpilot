@@ -14,6 +14,7 @@ from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
 from openpilot.selfdrive.controls.lib.desire_helper import LaneChangeDirection, LaneChangeState
+from openpilot.selfdrive.controls.lib.lead_distance_velocity import DistanceLeadVelocity, apply_distance_lead_velocity
 from openpilot.starpilot.common.starpilot_variables import get_starpilot_toggles
 from opendbc.car.honda.radar_interface import BOSCH_A_FREQ_HZ
 from opendbc.car.honda.values import HONDA_BOSCH_A
@@ -461,6 +462,7 @@ class RadarD:
     self.g90_radar_filter = g90_radar_filter
     lead_prob_dt = DT_MDL if self.honda_bosch_a_radar else radar_ts
     self.lead_prob_filters = [FirstOrderFilter(0.0, 0.2, lead_prob_dt) for _ in range(2)]
+    self.distance_lead_velocity = [DistanceLeadVelocity(), DistanceLeadVelocity()]
     self.prev_lead_track_ids = [-1, -1]
     self.preferred_stale_track_ids = [-1, -1]
     self.preferred_challenger_stale_counts = [0, 0]
@@ -654,12 +656,18 @@ class RadarD:
                           g90_radar_filter=self.g90_radar_filter, lead_prob=self.lead_prob_filters[0].x,
                           preferred_track_id=self.prev_lead_track_ids[0],
                           honda_bosch_a_radar=self.honda_bosch_a_radar)
+      distance_velocity = getattr(self.starpilot_toggles, "lead_distance_velocity", False)
+      distance_offset = float(getattr(sm['starpilotPlan'], "increasedStoppedDistance", 0.0) or 0.0)
+      lead_one = apply_distance_lead_velocity(
+        distance_velocity, self.distance_lead_velocity[0], lead_one, self.v_ego, distance_offset=distance_offset)
       self.radar_state.leadOne = self._filter_post_standstill_lead(lead_one)
-      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, sm['modelV2'],
-                                          sm['carState'].standstill, sm['starpilotPlan'], self.starpilot_toggles, low_speed_override=False,
-                                          g90_radar_filter=self.g90_radar_filter, lead_prob=self.lead_prob_filters[1].x,
-                                          preferred_track_id=self.prev_lead_track_ids[1],
-                                          honda_bosch_a_radar=self.honda_bosch_a_radar)
+      lead_two = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, sm['modelV2'],
+                          sm['carState'].standstill, sm['starpilotPlan'], self.starpilot_toggles, low_speed_override=False,
+                          g90_radar_filter=self.g90_radar_filter, lead_prob=self.lead_prob_filters[1].x,
+                          preferred_track_id=self.prev_lead_track_ids[1],
+                          honda_bosch_a_radar=self.honda_bosch_a_radar)
+      self.radar_state.leadTwo = apply_distance_lead_velocity(
+        distance_velocity, self.distance_lead_velocity[1], lead_two, self.v_ego, distance_offset=distance_offset)
 
       for i, lead in enumerate((self.radar_state.leadOne, self.radar_state.leadTwo)):
         if lead.status and getattr(lead, "radar", False):

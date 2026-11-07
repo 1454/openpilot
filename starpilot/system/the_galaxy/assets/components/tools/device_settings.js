@@ -2968,6 +2968,7 @@ export function DeviceSettings({ params }) {
               <i class="bi ${activeSection.icon}"></i>
               <span class="ds-section-title">${activeSection.name} (${visibleParams.length})</span>
             </div>
+            ${activeSection.description ? html`<p class="ds-section-description">${activeSection.description}</p>` : ""}
             <div class="ds-section-body">
               ${renderSettingTree(visibleParams)}
             </div>

@@ -39,6 +39,7 @@ class DriverStateRenderer(Widget):
     self._dm_background = gui_app.texture("icons_mici/onroad/driver_monitoring/dm_background.png", DMOJI_SIZE, DMOJI_SIZE)
     self._dm_person = gui_app.texture("icons_mici/onroad/driver_monitoring/dm_person.png", CONE_SIZE, CONE_SIZE)
     self._dm_cone = gui_app.texture("icons_mici/onroad/driver_monitoring/dm_cone.png", CONE_SIZE, CONE_SIZE)
+    self.monitoring_ended = True
 
   def _render(self, rect):
     bg = self._dm_background
@@ -77,6 +78,26 @@ class DriverStateRenderer(Widget):
         rl.Color(r, g, b, int(255 * self._fade_filter.x)),
       )
 
+    if self.monitoring_ended:
+      self._draw_monitoring_off_mark()
+
+  def _draw_monitoring_off_mark(self):
+    alpha = int(255 * self._fade_filter.x)
+    if alpha < 8:
+      return
+    span = DMOJI_SIZE * 0.34
+    cx, cy = self.position_x, self.position_y
+    start_a = rl.Vector2(cx - span, cy - span)
+    end_a = rl.Vector2(cx + span, cy + span)
+    start_b = rl.Vector2(cx - span, cy + span)
+    end_b = rl.Vector2(cx + span, cy - span)
+    outline = rl.Color(20, 0, 0, alpha)
+    red = rl.Color(230, 36, 36, alpha)
+    rl.draw_line_ex(start_a, end_a, 14.0, outline)
+    rl.draw_line_ex(start_b, end_b, 14.0, outline)
+    rl.draw_line_ex(start_a, end_a, 8.0, red)
+    rl.draw_line_ex(start_b, end_b, 8.0, red)
+
   def _update_state(self):
     sm = ui_state.sm
     dm_state = sm["driverMonitoringState"]
@@ -102,13 +123,14 @@ class DriverStateRenderer(Widget):
     data_fresh = sm.recv_frame["driverStateV2"] > ui_state.started_frame
     not_hidden = not ui_state.starpilot_toggles.get("hide_dm_icon", False)
     should_draw = alert_ok and data_fresh and not_hidden
+    self.monitoring_ended = bool(ui_state.ui_params.get_bool("EndDriverMonitoring"))
 
     if not should_draw:
       self._fade_filter.update(0.0)
-    elif not self.is_active:
-      self._fade_filter.update(0.35)
-    else:
+    elif self.monitoring_ended or self.is_active:
       self._fade_filter.update(1.0)
+    else:
+      self._fade_filter.update(0.35)
 
     self._pre_calculate_position()
 

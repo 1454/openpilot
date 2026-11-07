@@ -29,6 +29,14 @@ def _declared_default(key):
   return match.group(1)
 
 
+def test_added_controls_page_describes_monitoring_uploads_and_gas_torque():
+  section = next(item for item in _layout() if item["name"] == "Added Controls")
+
+  assert section["description"] == (
+    "Driver monitoring & uploads, distance lead speed, Sierra lateral, and GM gas torque parameters."
+  )
+
+
 def test_galaxy_layout_removes_obsolete_and_duplicate_controls():
   layout = _layout()
   sections = _params_by_section(layout)

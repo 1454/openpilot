@@ -265,6 +265,8 @@ class SelfdriveD:
     self.personality = log.LongitudinalPersonality.relaxed if self.safe_mode else self.params.get("LongitudinalPersonality", return_default=True)
     self.recalibrating_seen = False
     self.dm_lockout_set = False
+    self.dm_monitoring_ended = self.params.get_bool("EndDriverMonitoring")
+    self.dm_monitoring_ended_frame = 0
     self.dm_uncertain_alerted = False
     self.state_machine = StateMachine()
     self.rk = Ratekeeper(100, print_delay_threshold=None)
@@ -455,28 +457,36 @@ class SelfdriveD:
       self.events.add(EventName.resumeBlocked)
 
     if not self.CP.notCar:
-      # Block engaging until lockout times out or ignition reset
-      if self.sm['driverMonitoringState'].lockout and not self.dm_lockout_set:
-        self.params.put_bool("DriverTooDistracted", True)
-        self.dm_lockout_set = True
-      elif not self.sm['driverMonitoringState'].lockout and self.dm_lockout_set:
-        self.params.remove("DriverTooDistracted")
-        self.dm_lockout_set = False
-      # No entry conditions
-      if self.sm['driverMonitoringState'].lockout or self.sm['driverMonitoringState'].alwaysOnLockout:
-        self.events.add(EventName.tooDistracted)
-      # Alerts
-      vision_dm = self.sm['driverMonitoringState'].activePolicy == MonitoringPolicy.vision
-      if self.sm['driverMonitoringState'].alertLevel == AlertLevel.one:
-        self.events.add(EventName.driverDistracted1 if vision_dm else EventName.driverUnresponsive1)
-      elif self.sm['driverMonitoringState'].alertLevel == AlertLevel.two:
-        self.events.add(EventName.driverDistracted2 if vision_dm else EventName.driverUnresponsive2)
-      elif self.sm['driverMonitoringState'].alertLevel == AlertLevel.three:
-        self.events.add(EventName.driverDistracted3 if vision_dm else EventName.driverUnresponsive3)
-      # Warn consistent DM uncertainty
-      if self.sm['driverMonitoringState'].visionPolicyState.uncertainOffroadAlertPercent >= 100 and not self.dm_uncertain_alerted:
-        set_offroad_alert("Offroad_DriverMonitoringUncertain", True)
-        self.dm_uncertain_alerted = True
+      if self.sm.frame - self.dm_monitoring_ended_frame >= 100:
+        self.dm_monitoring_ended = self.params.get_bool("EndDriverMonitoring")
+        self.dm_monitoring_ended_frame = self.sm.frame
+      if self.dm_monitoring_ended:
+        if self.dm_lockout_set:
+          self.params.remove("DriverTooDistracted")
+          self.dm_lockout_set = False
+      else:
+        # Block engaging until lockout times out or ignition reset
+        if self.sm['driverMonitoringState'].lockout and not self.dm_lockout_set:
+          self.params.put_bool("DriverTooDistracted", True)
+          self.dm_lockout_set = True
+        elif not self.sm['driverMonitoringState'].lockout and self.dm_lockout_set:
+          self.params.remove("DriverTooDistracted")
+          self.dm_lockout_set = False
+        # No entry conditions
+        if self.sm['driverMonitoringState'].lockout or self.sm['driverMonitoringState'].alwaysOnLockout:
+          self.events.add(EventName.tooDistracted)
+        # Alerts
+        vision_dm = self.sm['driverMonitoringState'].activePolicy == MonitoringPolicy.vision
+        if self.sm['driverMonitoringState'].alertLevel == AlertLevel.one:
+          self.events.add(EventName.driverDistracted1 if vision_dm else EventName.driverUnresponsive1)
+        elif self.sm['driverMonitoringState'].alertLevel == AlertLevel.two:
+          self.events.add(EventName.driverDistracted2 if vision_dm else EventName.driverUnresponsive2)
+        elif self.sm['driverMonitoringState'].alertLevel == AlertLevel.three:
+          self.events.add(EventName.driverDistracted3 if vision_dm else EventName.driverUnresponsive3)
+        # Warn consistent DM uncertainty
+        if self.sm['driverMonitoringState'].visionPolicyState.uncertainOffroadAlertPercent >= 100 and not self.dm_uncertain_alerted:
+          set_offroad_alert("Offroad_DriverMonitoringUncertain", True)
+          self.dm_uncertain_alerted = True
 
     # Add car events, ignore if CAN isn't valid
     if CS.canValid:

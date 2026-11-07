@@ -11,6 +11,7 @@ from opendbc.car.gm.values import (
 )
 from opendbc.car.interfaces import CarControllerBase
 from openpilot.common.pid import PIDController
+from openpilot.selfdrive.controls.lib.gas_command import resolved_gas_model, stock_drag_and_area
 from openpilot.common.params import Params, UnknownKeyName
 from openpilot.starpilot.common.testing_grounds import testing_ground
 
@@ -259,12 +260,22 @@ def shape_truck_pitch_accel(pitch_accel: float, v_ego: float, enabled: bool) -> 
 MAX_UPHILL_GRADE_FF = 0.20
 
 
-def limit_grade_feedforward(planner_accel: float, pitch_accel: float) -> float:
+def limit_grade_feedforward(planner_accel: float, pitch_accel: float, uphill_cap: float = MAX_UPHILL_GRADE_FF) -> float:
   if pitch_accel > 0.0 and planner_accel > 0.0:
     return 0.0
-  if pitch_accel > MAX_UPHILL_GRADE_FF:
-    return MAX_UPHILL_GRADE_FF
+  if pitch_accel > uphill_cap:
+    return uphill_cap
   return pitch_accel
+
+
+def grade_settings(starpilot_toggles) -> tuple[float, float]:
+  gain = float(getattr(starpilot_toggles, "gas_grade_gain", 1.0))
+  cap = float(getattr(starpilot_toggles, "gas_grade_uphill_cap", MAX_UPHILL_GRADE_FF))
+  if not math.isfinite(gain):
+    gain = 1.0
+  if not math.isfinite(cap):
+    cap = MAX_UPHILL_GRADE_FF
+  return float(np.clip(gain, 0.0, 2.0)), float(np.clip(cap, 0.0, 1.0))
 
 
 def shape_truck_friction_brake(apply_brake: int, accel_cmd: float, stopping: bool, active: bool) -> tuple[int, bool]:
@@ -571,9 +582,14 @@ class CarController(CarControllerBase):
     }
     self.mass = CP.mass
     self.tireRadius = 0.075 * CP.wheelbase + 0.1453
-    self.frontalArea = 1.05 * CP.wheelbase + 0.0679
-    self.coeffDrag = 0.30
+    self.coeffDrag, self.frontalArea = stock_drag_and_area(
+      CP.carFingerprint in (CAR.CHEVROLET_SILVERADO, CAR.CHEVROLET_SILVERADO_CC), CP.wheelbase)
     self.airDensity = 1.225
+    self._stock_gas_mass = self.mass
+    self._stock_tire_radius = self.tireRadius
+    self._stock_coeff_drag = self.coeffDrag
+    self._stock_frontal_area = self.frontalArea
+    self._stock_air_density = self.airDensity
     self.malibu_cancel_phase = 0
     self.malibu_button_phase = 0
     self.malibu_last_button_ts_nanos = 0
@@ -1004,6 +1020,10 @@ class CarController(CarControllerBase):
     if self.CP.openpilotLongitudinalControl:
       # Gas/regen, brakes, and UI commands - all at 25Hz
       if self.frame % 4 == 0:
+        self.mass, self.tireRadius, self.coeffDrag, self.frontalArea, self.airDensity = resolved_gas_model(
+          self._stock_gas_mass, self._stock_tire_radius, self._stock_coeff_drag,
+          self._stock_frontal_area, self._stock_air_density, starpilot_toggles,
+        )
         stopping = actuators.longControlState == LongCtrlState.stopping
         interceptor_gas_cmd = 0
         at_full_stop = CC.longActive and CS.out.standstill
@@ -1028,13 +1048,14 @@ class CarController(CarControllerBase):
           self.truck_follow_accel = 0.0
         else:
           long_pitch_enabled = bool(getattr(starpilot_toggles, "long_pitch", True))
+          grade_gain, grade_uphill_cap = grade_settings(starpilot_toggles)
 
           if self.is_volt:
             if long_pitch_enabled and len(CC.orientationNED) == 3 and CS.out.vEgo > self.CP.vEgoStopping:
-              volt_pitch_accel = math.sin(CC.orientationNED[1]) * ACCELERATION_DUE_TO_GRAVITY
+              volt_pitch_accel = math.sin(CC.orientationNED[1]) * ACCELERATION_DUE_TO_GRAVITY * grade_gain
             else:
               volt_pitch_accel = 0.0
-            volt_pitch_accel = limit_grade_feedforward(accel, volt_pitch_accel)
+            volt_pitch_accel = limit_grade_feedforward(accel, volt_pitch_accel, grade_uphill_cap)
 
             aero_drag_accel = (0.5 * self.coeffDrag * self.frontalArea * self.airDensity * CS.out.vEgo ** 2) / self.mass
             accel_cmd = float(np.clip(accel + aero_drag_accel + volt_pitch_accel, self.params.ACCEL_MIN, self.params.ACCEL_MAX))
@@ -1056,7 +1077,7 @@ class CarController(CarControllerBase):
               self.apply_gas = self.params.INACTIVE_REGEN
           else:
             if long_pitch_enabled and len(CC.orientationNED) == 3 and CS.out.vEgo > self.CP.vEgoStopping:
-              accel_due_to_pitch = math.sin(CC.orientationNED[1]) * ACCELERATION_DUE_TO_GRAVITY
+              accel_due_to_pitch = math.sin(CC.orientationNED[1]) * ACCELERATION_DUE_TO_GRAVITY * grade_gain
             else:
               accel_due_to_pitch = 0.0
 
@@ -1072,7 +1093,7 @@ class CarController(CarControllerBase):
               not self.CP.enableGasInterceptorDEPRECATED
             )
             accel_due_to_pitch = shape_truck_pitch_accel(accel_due_to_pitch, CS.out.vEgo, truck_long_smoothing)
-            accel_due_to_pitch = limit_grade_feedforward(actuators.accel, accel_due_to_pitch)
+            accel_due_to_pitch = limit_grade_feedforward(actuators.accel, accel_due_to_pitch, grade_uphill_cap)
             accel_input = actuators.accel + accel_due_to_pitch
             if truck_long_smoothing:
               accel_input = shape_truck_positive_accel(

@@ -38,6 +38,15 @@ def test_advanced_settings_hidden_count_shown_in_status_bar():
   assert "hidden" in source
 
 
+def test_device_settings_shows_section_descriptions():
+  source = _device_settings()
+  css = DEVICE_SETTINGS_CSS_PATH.read_text(encoding="utf-8")
+
+  assert "activeSection.description" in source
+  assert "ds-section-description" in source
+  assert ".ds-section-description" in css
+
+
 def test_device_settings_uses_the_params_api_and_layout_json():
   source = _device_settings()
 

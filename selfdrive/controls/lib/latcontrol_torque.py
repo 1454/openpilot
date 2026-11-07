@@ -147,6 +147,8 @@ class LatControlTorque(LatControl):
     self.is_civic_bosch_modified = CP.carFingerprint == HONDA_CAR.HONDA_CIVIC_BOSCH and bool(CP.flags & HondaFlags.EPS_MODIFIED)
     self.is_honda_accord = CP.carFingerprint == HONDA_CAR.HONDA_ACCORD
     self.is_silverado = CP.carFingerprint in SILVERADO_CARS
+    if self.is_silverado:
+      self._silverado_low_speed_reset = self.low_speed_reset_threshold
     self.is_gmc_yukon_cc = CP.carFingerprint in GMC_YUKON_CC_CARS
     self.is_ram_1500 = CP.carFingerprint in RAM_1500_CARS
     self.is_gm = CP.brand == "gm"
@@ -368,7 +370,12 @@ class LatControlTorque(LatControl):
       kia_carnival_center_taper = get_kia_carnival_center_taper_scale(setpoint, CS.vEgo) if kia_carnival_active else 1.0
       tucson_4th_gen_center_taper = get_tucson_4th_gen_center_taper_scale(setpoint, CS.vEgo) if tucson_4th_gen_active else 1.0
       palisade_center_taper = get_palisade_center_taper_scale(setpoint, CS.vEgo) if palisade_active else 1.0
-      silverado_center_taper = get_silverado_center_taper_scale(setpoint, CS.vEgo) if self.is_silverado else 1.0
+      sierra_lateral = self.is_silverado and bool(getattr(starpilot_toggles, "sierra_lateral", False))
+      if self.is_silverado:
+        self.low_speed_reset_threshold = MIN_LATERAL_CONTROL_SPEED if sierra_lateral else self._silverado_low_speed_reset
+      silverado_center_taper = 1.0 if sierra_lateral else (
+        get_silverado_center_taper_scale(setpoint, CS.vEgo) if self.is_silverado else 1.0
+      )
       civic_bosch_modified_a_center_taper = get_civic_bosch_modified_a_center_taper_scale(setpoint, CS.vEgo) if (
         self.is_civic_bosch_modified and civic_bosch_modified_a_lateral_testing_ground_active()
       ) else 1.0

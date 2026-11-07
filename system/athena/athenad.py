@@ -260,6 +260,8 @@ def retry_upload(tid: int, end_event: threading.Event, increase_count: bool = Tr
 def cb(sm, item, tid, end_event: threading.Event, sz: int, cur: int) -> None:
   # Abort transfer if connection changed to metered after starting upload
   # or if athenad is shutting down to re-connect the websocket
+  if params_store.get_bool("EndDriverMonitoring") or params_store.get_bool("NoUploads"):
+    raise AbortTransferException
   if not item.allow_cellular:
     if (time.monotonic() - sm.recv_time['deviceState']) > DEVICE_STATE_UPDATE_INTERVAL:
       sm.update(0)
@@ -296,7 +298,8 @@ def upload_handler(end_event: threading.Event) -> None:
       sm.update(0)
       metered = sm['deviceState'].networkMetered
       network_type = sm['deviceState'].networkType.raw
-      if metered and (not item.allow_cellular) and not always_allow_uploads():
+      if (params_store.get_bool("EndDriverMonitoring") or params_store.get_bool("NoUploads") or
+          (metered and (not item.allow_cellular) and not always_allow_uploads())):
         retry_upload(tid, end_event, False)
         continue
 
