@@ -16,6 +16,7 @@
   {
     "name": "Added Controls",
     "icon": "bi-toggles",
+    "description": "Driver monitoring & uploads, distance lead speed, Sierra lateral, and GM gas torque parameters.",
     "params": [
       {
         "key": "EndDriverMonitoring",

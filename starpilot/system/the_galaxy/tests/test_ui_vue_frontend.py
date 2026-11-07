@@ -381,6 +381,8 @@ def test_ui_settings_deep_links_and_dev_mode_updates():
   # Turning Developer Mode on reloads data so newly-visible sections (e.g.
   # Favorites) render immediately.
   assert "devModeOn() { this.load() }" in settings
+  assert 'v-if="activeSection.description"' in settings
+  assert 'class="gx-page-description"' in settings
 
 
 def test_ui_galaxy_background_is_css_only_and_lightweight():

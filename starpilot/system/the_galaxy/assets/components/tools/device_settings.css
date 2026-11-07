@@ -168,6 +168,14 @@
   font-weight: var(--font-weight-bold);
 }
 
+.ds-section-description {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+  margin: 0;
+  padding: var(--padding-sm) var(--padding-base) 0;
+}
+
 .ds-section-chevron {
   color: var(--text-muted);
   font-size: var(--font-size-sm);

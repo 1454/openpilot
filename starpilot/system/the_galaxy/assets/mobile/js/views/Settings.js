@@ -197,6 +197,7 @@ export const Settings = {
               <i class="bi" :class="activeSection.icon"></i>
               <span class="gx-section__title">{{ tr(activeSection.name, activeSection.name) }}</span>
             </div>
+            <p v-if="activeSection.description" class="gx-page-description">{{ tr(activeSection.description, activeSection.description) }}</p>
             <LongitudinalMode v-if="modeSection(activeSection)" :section="modeSection(activeSection)" :values="values" @change="onParamChange" />
             <SettingTree :params="ordinaryParams(activeSection)" :parent-key="null" :values="values"
               :expanded="expanded" :lock-reason="lockReason" @change="onParamChange" @manage="toggleManage" />
