@@ -159,23 +159,6 @@ def checksum_2_pscm_related_message(b2):
   return lut.get(b2, 0)
 
 
-def checksum_lca_4_message(*args) -> int:
-  """
-  Placeholder for LCA_4 (0x90) checksum calculation.
-
-  TODO: Implementation will be provided after checksum analysis is complete.
-  For now, returns 0 as a placeholder.
-
-  Args:
-      *args: Byte values needed for checksum calculation (TBD)
-
-  Returns:
-      Checksum byte (0-255)
-  """
-  # Placeholder - will be replaced with actual checksum algorithm
-  return 0
-
-
 class LCA3CounterSync:
   """
   Best-effort pattern synchronization for LCA_3 COUNTER_1.
@@ -365,33 +348,3 @@ def checksum_lca_5_message(byte0: int, byte1: int, byte3: int, byte4: int, byte5
 
 
 # Test examples
-if __name__ == "__main__":
-  print("CAN 0x67 Checksum Calculator")
-  print("=" * 60)
-
-  # Test cases
-  tests = [
-    ([0x80, 0x00, 0x4F, 0x00, 0x00, 0xBA, 0x00], 0x32),
-    ([0x80, 0x00, 0x8F, 0x00, 0x00, 0xBA, 0x00], 0x89),
-    ([0x80, 0x00, 0xCF, 0x00, 0x00, 0xBA, 0x00], 0xE0),
-    ([0x80, 0x00, 0x1F, 0x00, 0x00, 0xBA, 0x00], 0x06),
-  ]
-
-  all_passed = True
-  for i, (bytes_list, expected) in enumerate(tests, 1):
-    calculated = checksum_lca_5_message(*bytes_list[:5])
-    status = "✓" if calculated == expected else "✗"
-
-    print(f"\nTest {i}: {status}")
-    print(f"  Bytes:      {' '.join(f'{b:02X}' for b in bytes_list)}")
-    print(f"  Expected:   0x{expected:02X}")
-    print(f"  Calculated: 0x{calculated:02X}")
-
-    if calculated != expected:
-      all_passed = False
-
-  print("\n" + "=" * 60)
-  if all_passed:
-    print("All tests passed! ✓")
-  else:
-    print("Some tests failed! ✗")
