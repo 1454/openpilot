@@ -15,7 +15,9 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process, set_core_affinity
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
+from openpilot.selfdrive.controls.lib.added_toggles import AddedToggles
 from openpilot.selfdrive.controls.lib.lead_distance_velocity import DistanceLeadVelocity, apply_distance_lead_velocity
+from openpilot.selfdrive.controls.lib.lead_pipeline import FUTURE_KEY, LEAD_TOGGLE_KEYS, RESPONSIVE_KEY, TRACKER_KEY, LeadPipeline
 from openpilot.starpilot.conditional_mode.adjacent import (
   CLOCK_PAIR_MAX_SKEW_NS, MODEL_EOF_MAX_AGE_NS, MODEL_MAX_AGE_NS, SOURCE_MAX_AGE_NS,
   AdjacentFrame, AdjacentObservation, AdjacentTrack, MonoSource, UNKNOWN, evaluate,
@@ -218,6 +220,8 @@ class RadarD:
     self.kalman_params = KalmanParams(1.0 / BOSCH_A_FREQ_HZ if self.honda_bosch_a is not None else DT_MDL)
     self.lead_prob_filters = [FirstOrderFilter(0.0, 0.2, DT_MDL) for _ in range(2)]
     self.distance_lead_velocity = [DistanceLeadVelocity(), DistanceLeadVelocity()]
+    self.lead_toggles = AddedToggles(LEAD_TOGGLE_KEYS, params)
+    self.lead_pipeline = LeadPipeline()
 
     self.v_ego = 0.0
     self.v_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
@@ -378,12 +382,25 @@ class RadarD:
         lead_one = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x, low_speed_override=True)
         lead_two = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
                             self.lead_prob_filters[1].x, low_speed_override=False)
+      toggles = self.lead_toggles.update(self._longitudinal_enabled and self.honda_bosch_a is None)
+      tracker_enabled = toggles[TRACKER_KEY] and not self.lead_pipeline.failed
+      if tracker_enabled or self.lead_pipeline.was_enabled:
+        model = sm['modelV2']
+        yaw_rate = float(model.orientationRate.z[0]) if len(model.orientationRate.z) else None
+        lead_one, lead_two = self.lead_pipeline.update(
+          leads_v3, [lead_one, lead_two], self.radar_state.mdMonoTime * 1e-9, self.v_ego, yaw_rate,
+          self.radar_state_valid and self.ready, enabled=tracker_enabled,
+          future_enabled=toggles[FUTURE_KEY], responsive_enabled=toggles[RESPONSIVE_KEY])
+      # The tracker already derives vision lead speed from distance; never stack both estimators.
+      distance_velocity_enabled = self._distance_velocity_enabled and not tracker_enabled
       self.radar_state.leadOne = apply_distance_lead_velocity(
-        self._distance_velocity_enabled, self.distance_lead_velocity[0], lead_one, self.v_ego
+        distance_velocity_enabled, self.distance_lead_velocity[0], lead_one, self.v_ego
       )
       self.radar_state.leadTwo = apply_distance_lead_velocity(
-        self._distance_velocity_enabled, self.distance_lead_velocity[1], lead_two, self.v_ego
+        distance_velocity_enabled, self.distance_lead_velocity[1], lead_two, self.v_ego
       )
+    elif self.lead_pipeline.was_enabled:
+      self.lead_pipeline.reset()
     if self.adjacent_enabled:
       self._qualified_adjacent(sm, rr)
 

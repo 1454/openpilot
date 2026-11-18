@@ -8,6 +8,7 @@ import pytest
 from openpilot.cereal import log
 from openpilot.selfdrive.controls.lib.drive_helpers import smooth_value
 from openpilot.selfdrive.modeld.constants import LAT_SMOOTH_SECONDS
+from openpilot.selfdrive.modeld.lane_policy import LanePolicy
 
 
 def action_function():
@@ -16,7 +17,8 @@ def action_function():
                   if isinstance(node, ast.FunctionDef) and node.name == "get_action_from_model")
   namespace = {"np": np, "log": log, "smooth_value": smooth_value,
                "LONG_SMOOTH_SECONDS": 0.3, "LAT_SMOOTH_SECONDS": LAT_SMOOTH_SECONDS,
-               "MIN_LAT_CONTROL_SPEED": 0.3, "should_stop": lambda speed, accel: False}
+               "MIN_LAT_CONTROL_SPEED": 0.3, "should_stop": lambda speed, accel: False,
+               "lane_policy": LanePolicy(None)}
   exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), namespace)
   return namespace["get_action_from_model"]
 
@@ -29,6 +31,25 @@ def test_action_curvature_low_speed_threshold(speed):
   assert action.desiredCurvature == pytest.approx(expected)
   assert action.desiredAcceleration == pytest.approx(smooth_value(0.5, 0.1, 0.3))
   assert not action.shouldStop
+
+
+def test_lane_policy_off_matches_stock_and_on_is_smoothed():
+  function = action_function()
+  previous = log.ModelDataV2.Action(desiredCurvature=0.01, desiredAcceleration=0.1)
+  raw = 0.25 / max(2.5, 5.0) ** 2
+  off = function({"action": np.array([[0.25, 0.5]])}, previous, 0.2, 0.2, 5.0)
+  assert off.desiredCurvature == pytest.approx(smooth_value(raw, 0.01, LAT_SMOOTH_SECONDS))
+
+  class Offset:
+    def update(self, output, curvature, speed, blinkers_active=False, lane_policy_enabled=False,
+               lateral_active=False, steering_pressed=False, frame_time=None):
+      return curvature + (0.001 if lane_policy_enabled else 0.0)
+
+  function.__globals__["lane_policy"] = Offset()
+  corrected = function({"action": np.array([[0.25, 0.5]])}, previous, 0.2, 0.2, 5.0, False, True)
+  assert corrected.desiredCurvature == pytest.approx(smooth_value(raw + 0.001, 0.01, LAT_SMOOTH_SECONDS))
+  held = function({"action": np.array([[0.25, 0.5]])}, previous, 0.2, 0.2, 0.0, False, True)
+  assert held.desiredCurvature == pytest.approx(0.01)
 
 
 def test_legacy_plan_action_is_unchanged():

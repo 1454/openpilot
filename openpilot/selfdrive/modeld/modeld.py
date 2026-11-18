@@ -39,7 +39,9 @@ from openpilot.common.realtime import config_realtime_process, set_core_affinity
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.common.transformations.model import get_warp_matrix
+from openpilot.selfdrive.controls.lib.added_toggles import AddedToggles
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
+from openpilot.selfdrive.modeld.lane_policy import active_policy
 from openpilot.starpilot.lateral.lane_change_preferences import LiveLaneChangePolicy
 from openpilot.starpilot.lateral.auto_lane_change import (
   ClockEpochGuard, auto_evidence, auto_trigger_engaged, paired_clocks_ns, session_policy, steering_capable,
@@ -68,12 +70,19 @@ from openpilot.selfdrive.modeld.helpers import MODELS_DIR, chestnut_present, mod
 SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
 
 LONG_SMOOTH_SECONDS = 0.3
+ROAD_EDGE_KEY = "RoadEdgeLaneAssist"
+FRESH_SIGNAL_KEY = "LaneChangeFreshSignal"
+MODEL_TOGGLE_KEYS = (ROAD_EDGE_KEY, FRESH_SIGNAL_KEY)
+lane_policy = active_policy()
 MIN_LAT_CONTROL_SPEED = 0.3
 BIG_MODEL_TIMEOUT = 120
 
 
 def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
-                          lat_action_t: float, long_action_t: float, v_ego: float) -> log.ModelDataV2.Action:
+                          lat_action_t: float, long_action_t: float, v_ego: float,
+                          blinkers_active: bool = False, lane_policy_enabled: bool = False,
+                          lateral_active: bool = False, steering_pressed: bool = False,
+                          frame_time: float | None = None) -> log.ModelDataV2.Action:
   if 'action' not in model_output:
     plan = model_output['plan'][0]
     desired_accel = get_accel_from_plan(plan[:,Plan.VELOCITY][:,0],
@@ -88,6 +97,10 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
   else:
     desired_accel = model_output['action'][0,1]
     desired_curvature = model_output['action'][0,0] / (max(2.5, v_ego))**2
+  # Road-edge assist corrects curvature before smoothing. Off resets the policy and leaves curvature unchanged.
+  desired_curvature = lane_policy.update(model_output, desired_curvature, v_ego,
+                                         blinkers_active, lane_policy_enabled, lateral_active,
+                                         steering_pressed, frame_time)
   stop = should_stop(v_ego, desired_accel)
   desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, LONG_SMOOTH_SECONDS)
   if v_ego > MIN_LAT_CONTROL_SPEED:
@@ -519,6 +532,7 @@ def main(demo=False):
   initial_mono_ns, initial_boot_ns, initial_skew_ns = paired_clocks_ns()
   lane_clock_guard = ClockEpochGuard(initial_mono_ns, initial_boot_ns, initial_skew_ns)
   DH = DesireHelper(runtime_lane_policy)
+  model_toggles = AddedToggles(MODEL_TOGGLE_KEYS, params)
   navigation_turn = TurnIntent(params, CP)
   lane_status_session = uuid.uuid4().hex
   lane_status_sequence = 0
@@ -564,6 +578,13 @@ def main(demo=False):
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["narrowRoadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
+    added_model = model_toggles.update(True)
+    blinkers_active = bool(sm["carState"].leftBlinker or sm["carState"].rightBlinker)
+    lateral_active = bool(sm["carControl"].latActive)
+    steering_pressed = bool(sm["carState"].steeringPressed)
+    frame_time = meta_main.timestamp_eof / 1e9
+    lane_policy_enabled = bool(added_model[ROAD_EDGE_KEY])
+    fresh_signal = bool(added_model[FRESH_SIGNAL_KEY])
     subaru_tau = subaru_smooth_seconds(v_ego, subaru_smoothing)
     volkswagen_tau = volkswagen_smoothing(CP, receipt_owner.load)
     lat_delay = sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS + subaru_tau + volkswagen_tau + kona_tau
@@ -621,7 +642,9 @@ def main(demo=False):
       send_chestnut = (chestnut_state is not None and
                        run_count % round(ModelConstants.MODEL_RUN_FREQ / SERVICE_LIST['chestnutGpuState'].frequency) == 0)
       model_output = model.run(bufs, transforms, inputs, chestnut_state.send if send_chestnut else None)
-      laboratory_action = (model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego)
+      laboratory_action = (model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego,
+                                                      blinkers_active, lane_policy_enabled, lateral_active,
+                                                      steering_pressed, frame_time)
                            if isinstance(model, LaboratoryPair) else None)
     except Exception:
       if not model.chestnut:
@@ -661,7 +684,9 @@ def main(demo=False):
         assert laboratory_action is not None
         action = laboratory_action
       else:
-        action = model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego)
+        action = model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego,
+                                             blinkers_active, lane_policy_enabled, lateral_active, steering_pressed,
+                                             frame_time)
       filter_action(action, prev_action, v_ego, subaru_tau + volkswagen_tau + kona_tau)
       prev_action = action
       fill_model_msg(modelv2_send, model_output, action,
@@ -682,11 +707,12 @@ def main(demo=False):
                     auto_evidence(sm, modelv2_send.modelV2, direction, runtime_lane_policy.minimum_lane_width_m,
                                   now_mono_ns=mono_now_ns, now_boot_ns=boot_now_ns,
                                   model_valid=bool(modelv2_send.valid), vehicle_capable=auto_vehicle_capable))
-      engaged = bool(sm['carControl'].latActive)
-      DH.update(car_state, sm['carControl'].latActive, lane_change_prob,
+      engaged = lateral_active
+      DH.update(car_state, lateral_active, lane_change_prob,
                 auto_evidence=auto_ready, engaged=auto_trigger_engaged(sm, runtime_lane_policy,
                   openpilot_longitudinal=bool(CP.openpilotLongitudinalControl), now_mono_ns=mono_now_ns),
-                navigation_turn=matching_turn_signal(sm, mono_now_ns, supported=turn_supported))
+                navigation_turn=matching_turn_signal(sm, mono_now_ns, supported=turn_supported),
+                fresh_signal=fresh_signal)
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
 

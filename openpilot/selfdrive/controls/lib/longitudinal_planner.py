@@ -13,6 +13,8 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.accel_boost import AccelBoost
+from openpilot.selfdrive.controls.lib.added_toggles import AddedToggles
+from openpilot.selfdrive.controls.lib.e2e_slowing import E2ESlowingAssist, get_model_lead_speed
 from openpilot.starpilot.longitudinal.encouragement import Encouragement
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (LongitudinalMpc, LongitudinalPlanSource, get_T_FOLLOW, get_jerk_factor,
@@ -43,6 +45,10 @@ from openpilot.starpilot.car.volkswagen.stopped_lead import owner_for as vw_stop
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
 from openpilot.starpilot.longitudinal.lead_approach import LeadApproach, LeadApproachKey, project as project_approach
 from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
+
+E2E_ASSIST_KEY = "E2ESlowingAssist"
+E2E_ACCEPTED_SPEED_KEY = "E2ESlowingAcceptedSpeed"
+E2E_TOGGLE_KEYS = (E2E_ASSIST_KEY, E2E_ACCEPTED_SPEED_KEY)
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
@@ -122,6 +128,10 @@ class LongitudinalPlanner:
     self.lane_change_gap = LaneChangeGap()
     self.experimental_release = ExperimentalRelease()
     self.lead_approach = LeadApproach(dt, CP.longitudinalActuatorDelay)
+    self.e2e_assist = E2ESlowingAssist(dt)
+    self.e2e_assist_active = False
+    # plannerd attaches Params; without it both toggles read off.
+    self.added_toggles = AddedToggles(E2E_TOGGLE_KEYS, None)
 
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
     self.a_cruise = init_a
@@ -434,6 +444,27 @@ class LongitudinalPlanner:
     self.last_curve_ceiling_applied = (curve.effective_mps is not None and self.a_cruise < output_a_target_mpc and
                                       (not sm['selfdriveState'].experimentalMode or self.a_cruise < output_a_target_e2e))
     self.output_should_stop = self.force_stop_plan.should_stop or any(should_stop for _, _, should_stop in candidates)
+    added = self.added_toggles.update(bool(self.CP.openpilotLongitudinalControl))
+    self.e2e_assist_active = False
+    if added[E2E_ASSIST_KEY]:
+      model_accel = sm['modelV2'].action.desiredAcceleration
+      model_stop = bool(sm['modelV2'].action.shouldStop)
+      assist_eligible = bool(
+        not reset_state and sm['selfdriveState'].enabled and not sm['selfdriveState'].experimentalMode and
+        sm['carControl'].longActive and not (sm['carState'].gasPressed or sm['carState'].brakePressed) and
+        math.isfinite(model_accel) and
+        all(getattr(sm, 'valid', {}).get(service, False) is True for service in ('modelV2', 'radarState')))
+      output_a_target, assist_stop, self.e2e_assist_active = self.e2e_assist.update(
+        eligible=assist_eligible, lead=sm['radarState'].leadOne, v_ego=v_ego,
+        model_lead_speed=get_model_lead_speed(sm['modelV2'], v_ego),
+        regular_accel=float(np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)),
+        e2e_accel=float(np.clip(model_accel, ACCEL_MIN, ACCEL_MAX)), e2e_stop=model_stop,
+        use_accepted_lead_speed=added[E2E_ACCEPTED_SPEED_KEY])
+      self.output_should_stop = bool(self.output_should_stop or assist_stop)
+      if self.e2e_assist_active:
+        self.mpc.source = LongitudinalPlanSource.e2e
+    else:
+      self.e2e_assist.reset()
     if conditional_handoff is None:
       self.experimental_release.reset()
     else:

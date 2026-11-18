@@ -26,7 +26,7 @@ export const DRIVING_GROUPS = Object.freeze([
     { page: "slc", title: "Speed Limit Controller", detail: "Dashboard and qualified vision source choices" },
     { page: "profiles", title: "Longitudinal profiles", detail: "Saved acceleration, braking, and following profiles" },
     { page: "traffic", title: "Traffic Mode", detail: "Saved follow, jerk, and profile curves" },
-    { page: "added", title: "Added Controls", detail: "Driver monitoring, uploads, distance lead speed, Sierra lateral, and gas torque" },
+    { page: "added", title: "Added Controls", detail: "Driver monitoring, lead stages, E2E slowing, lane assists, Sierra lateral, and gas torque" },
   ] },
 ])
 

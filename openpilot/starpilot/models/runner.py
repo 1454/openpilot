@@ -122,7 +122,8 @@ def validate_artifact(artifact: dict, version: str, camera_size: tuple[int, int]
 
 def action_from_outputs(outputs: dict[str, np.ndarray], version: str, previous: log.ModelDataV2.Action,
                         lat_action_t: float, long_action_t: float, v_ego: float,
-                        lat_smooth_seconds: float = 0.0, long_smooth_seconds: float = 0.3) -> log.ModelDataV2.Action:
+                        lat_smooth_seconds: float = 0.0, long_smooth_seconds: float = 0.3, *,
+                        lane_correct: Callable | None = None) -> log.ModelDataV2.Action:
   """Preserve the catalog's generation-specific action units and v9 curvature."""
   if version not in SUPPORTED_VERSIONS or min(lat_action_t, long_action_t) <= 0:
     raise ValueError("invalid catalog model action contract")
@@ -143,6 +144,8 @@ def action_from_outputs(outputs: dict[str, np.ndarray], version: str, previous: 
       yaw = np.interp(lat_action_t, ModelConstants.T_IDXS, plan[:, Plan.T_FROM_CURRENT_EULER][:, 2])
       yaw_rate = plan[0, Plan.ORIENTATION_RATE][2]
       curvature = 2 * yaw / (max(MIN_SPEED, v_ego) * lat_action_t) - yaw_rate / max(MIN_SPEED, v_ego)
+  if lane_correct is not None:
+    curvature = lane_correct(outputs, float(curvature), v_ego)
   acceleration = smooth_value(float(acceleration), previous.desiredAcceleration, long_smooth_seconds)
   curvature = (smooth_value(float(curvature), previous.desiredCurvature, lat_smooth_seconds)
                if v_ego > 0.3 else previous.desiredCurvature)
@@ -278,11 +281,20 @@ class CatalogModelState:
     return parsed
 
   def get_action_from_model(self, outputs: dict[str, np.ndarray], previous: log.ModelDataV2.Action,
-                            lat_action_t: float, long_action_t: float, v_ego: float) -> log.ModelDataV2.Action:
+                            lat_action_t: float, long_action_t: float, v_ego: float,
+                            blinkers_active: bool = False, lane_policy_enabled: bool = False,
+                            lateral_active: bool = False, steering_pressed: bool = False,
+                            frame_time: float | None = None) -> log.ModelDataV2.Action:
     """modeld's action call: this catalog generation's units, with modeld's smoothing."""
     from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS, LONG_SMOOTH_SECONDS
+    from openpilot.selfdrive.modeld.lane_policy import active_policy
+
+    def lane_correct(model_output, curvature, speed):
+      return active_policy().update(model_output, curvature, speed, blinkers_active, lane_policy_enabled,
+                                    lateral_active, steering_pressed, frame_time)
+
     return action_from_outputs(outputs, self.behavior_version, previous, lat_action_t, long_action_t, v_ego,
-                               LAT_SMOOTH_SECONDS, LONG_SMOOTH_SECONDS)
+                               LAT_SMOOTH_SECONDS, LONG_SMOOTH_SECONDS, lane_correct=lane_correct)
 
   def warmup(self) -> None:
     frames = {name: np.zeros(self.frame_buf_size, dtype=np.uint8) for name in self.vision_input_names}

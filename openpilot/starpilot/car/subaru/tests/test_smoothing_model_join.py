@@ -55,7 +55,8 @@ def test_actual_common_join_once_and_acceleration_unchanged(owner, tau, kona_tau
            SimpleNamespace(get_action_from_model=function))
   paired_action = function(outputs, previous, .2, .2, 2.) if owner == 'laboratory' else None
   scope = {'model': model, 'LaboratoryPair': LaboratoryPair, 'laboratory_action': paired_action, 'model_output': outputs, 'prev_action': previous,
-           'lat_action_t': .2, 'long_action_t': .2, 'v_ego': 2., 'subaru_tau': tau, 'volkswagen_tau': 0., 'kona_tau': kona_tau, 'filter_action': filter_action}
+           'lat_action_t': .2, 'long_action_t': .2, 'v_ego': 2., 'subaru_tau': tau, 'volkswagen_tau': 0., 'kona_tau': kona_tau, 'filter_action': filter_action,
+           'blinkers_active': False, 'lane_policy_enabled': False, 'lateral_active': False, 'steering_pressed': False, 'frame_time': None}
   exec(common_join(), scope)
   action = scope['action']
   total_tau = tau + kona_tau

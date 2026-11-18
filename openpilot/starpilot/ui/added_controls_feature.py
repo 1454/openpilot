@@ -1,4 +1,4 @@
-"""Added Controls feature owner for driver monitoring/uploads, distance lead speed, Sierra lateral, and GM gas/grade sliders."""
+"""Added Controls feature owner for driver monitoring, lead stages, E2E slowing, lane assists, and GM gas/grade sliders."""
 
 from __future__ import annotations
 
@@ -19,7 +19,18 @@ DEFAULT_WEIGHT_LB = 6250.0
 SIERRA_CENTER_TO_FRONT_RATIO = 0.75
 STOCK_AIR_DENSITY = 1.225
 
-TOGGLE_KEYS = ("EndDriverMonitoring", "LeadDistanceVelocity", "SierraLateral")
+TOGGLE_KEYS = (
+  "EndDriverMonitoring",
+  "LeadDistanceVelocity",
+  "BatmobileLeadTracker",
+  "LeadFutureMotion",
+  "LeadResponsiveMotion",
+  "E2ESlowingAssist",
+  "E2ESlowingAcceptedSpeed",
+  "LaneChangeFreshSignal",
+  "RoadEdgeLaneAssist",
+  "SierraLateral",
+)
 NUMERIC_KEYS = (
   "GasTireRadius",
   "CenterToFrontRatio",
@@ -233,6 +244,55 @@ class AddedControlsFeature:
         False,
         allowed,
         "Estimates a vision lead's speed and hard braking from distance instead of the model speed. Radar leads keep radar speed.",
+      ),
+      self._bool_row(
+        "BatmobileLeadTracker",
+        "Batmobile Lead Tracker",
+        False,
+        allowed,
+        "Track vision leads from distance history before the future and responsive stages. Off leaves stock radar/vision lead selection. Turns off Distance Lead Speed while it is on.",
+      ),
+      self._bool_row(
+        "LeadFutureMotion",
+        "Future Lead Position",
+        False,
+        allowed,
+        "Nudge lead speed and range using the model's 0, 2, and 4 second positions. Requires the lead tracker. Bounded to about -2 to +1 m/s and 0.3 m.",
+      ),
+      self._bool_row(
+        "LeadResponsiveMotion",
+        "Responsive Lead",
+        False,
+        allowed,
+        "Add extra slowing when recent range history shows the lead is closing. Requires the lead tracker. Can brake more than the lead is actually slowing.",
+      ),
+      self._bool_row(
+        "E2ESlowingAssist",
+        "E2E Slowing Assist",
+        False,
+        allowed,
+        "Let model braking slow the car for a slow lead without turning on experimental mode.",
+      ),
+      self._bool_row(
+        "E2ESlowingAcceptedSpeed",
+        "E2E Accepted Lead Speed",
+        False,
+        allowed,
+        "Also start that assist when the accepted lead speed is under 55 km/h, not only the model speed. Requires E2E slowing assist.",
+      ),
+      self._bool_row(
+        "LaneChangeFreshSignal",
+        "Fresh Lane-Change Signal",
+        False,
+        allowed,
+        "Require the turn signal to turn off and on again before another lane change. A signal already on at engagement does not start one.",
+      ),
+      self._bool_row(
+        "RoadEdgeLaneAssist",
+        "Road-Edge Lane Assist",
+        False,
+        allowed,
+        "Use a qualified road edge as a lane line and keep the learned lane width through brief confidence dips.",
       ),
       self._bool_row(
         "SierraLateral",

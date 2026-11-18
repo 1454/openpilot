@@ -325,6 +325,8 @@ def starpilot_main():
 
   ldw = LaneDepartureWarning()
   longitudinal_planner = LongitudinalPlanner(CP)
+  # Tests construct the planner with no params daemon, so both E2E toggles stay off.
+  longitudinal_planner.added_toggles.params = params
   nudge_preferences = NudgePreferences(params)
   # Saved-on features start only for a finalized, supported driving owner. Their
   # current-source and longitudinal authority checks still run every frame.

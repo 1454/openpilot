@@ -930,7 +930,7 @@ class FeatureSettingsOwner:
         rows.append(FeatureRow("", "Vehicle Settings", "Configure features supported by your vehicle", page=FeaturePage.VEHICLE, available=True))
       rows.append(FeatureRow("", "Driving Personalities", "Adjust Aggressive, Standard, Relaxed and Traffic profiles",
                              page=FeaturePage.PERSONALITIES, available=True))
-      rows.append(FeatureRow("", "Added Controls", "Driver monitoring & uploads, distance lead speed, Sierra lateral, and gas torque",
+      rows.append(FeatureRow("", "Added Controls", "Driver monitoring, lead stages, E2E slowing, lane assists, Sierra lateral, and gas torque",
                              page=FeaturePage.ADDED, available=True))
     elif page == FeaturePage.PERSONALITIES:
       title = "Driving Personalities"
@@ -1418,7 +1418,7 @@ class FeatureSettingsOwner:
                     row.key.startswith('conditional:') and not row.key.startswith(BUTTON_PREFIX) else fingerprint)
             for row in rows]
     subtitle = (
-        "Driver monitoring & uploads, distance lead speed, Sierra lateral, and GM gas torque parameters."
+        "Driver monitoring, lead stages, E2E slowing, lane assists, Sierra lateral, and GM gas torque parameters."
         if page == FeaturePage.ADDED else
         "Parked changes apply after the next drive starts. These are explicit manual overrides, separate from Auto Learn."
         if page == FeaturePage.TUNING else

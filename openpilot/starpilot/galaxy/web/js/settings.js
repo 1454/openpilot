@@ -481,7 +481,7 @@ export const SettingsPage = {
       <p class="gx-page-description" v-else-if="state.data?.page === 'curve'">Set how the vehicle slows for curves ahead.</p>
       <div v-else-if="state.data?.page === 'slc'"><p class="gx-page-description">Control how speed limits change your set speed.</p>
         <a class="gx-btn gx-btn--tonal" href="https://wiki.firestar.link/exclusive/speed-limit-controller/#vision-speed-limits" target="_blank" rel="noopener noreferrer"><i class="bi bi-book" aria-hidden="true"></i> Vision speed limits guide</a></div>
-      <p class="gx-page-description" v-else-if="state.data?.page === 'added'">Driver monitoring &amp; uploads, distance lead speed, Sierra lateral, and GM gas torque parameters.</p>
+      <p class="gx-page-description" v-else-if="state.data?.page === 'added'">Driver monitoring, lead stages, E2E slowing, lane assists, Sierra lateral, and GM gas torque parameters.</p>
       <p class="gx-page-description" v-else-if="state.data?.page === 'wheel'">Assign what the steering-wheel controls do.</p>
       <p class="gx-page-description" v-else-if="state.data?.page === 'data'">Choose what uploads when the vehicle uses mobile data.</p>
       <p class="gx-page-description" v-else-if="['aggressive','standard','relaxed'].includes(state.data?.page)">Adjust acceleration, braking and following for this driving style.</p>

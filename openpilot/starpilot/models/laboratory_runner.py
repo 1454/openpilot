@@ -92,8 +92,12 @@ class LaboratoryPair:
       self.lateral.last_warp = self.longitudinal.last_warp = None
       raise
 
-  def get_action_from_model(self, outputs, previous, lat_action_t, long_action_t, v_ego):
+  def get_action_from_model(self, outputs, previous, lat_action_t, long_action_t, v_ego,
+                            blinkers_active: bool = False, lane_policy_enabled: bool = False,
+                            lateral_active: bool = False, steering_pressed: bool = False,
+                            frame_time: float | None = None):
     from openpilot.selfdrive.modeld.constants import LAT_SMOOTH_SECONDS
+    from openpilot.selfdrive.modeld.lane_policy import active_policy
     LONG_SMOOTH_SECONDS = 0.3
     if self.failed or self._last_outputs is None:
       raise RuntimeError("Model Laboratory has no complete current frame")
@@ -101,7 +105,12 @@ class LaboratoryPair:
       actions = [action_from_outputs(value, model.behavior_version, previous, lat_action_t, long_action_t, v_ego,
                                      LAT_SMOOTH_SECONDS, LONG_SMOOTH_SECONDS)
                  for value, model in zip(self._last_outputs, (self.lateral, self.longitudinal), strict=True)]
-      return log.ModelDataV2.Action(**hybrid_action_values(*actions))
+      values = hybrid_action_values(*actions)
+      # The role actions are already smoothed. Apply the road-edge correction once to the hybrid curvature.
+      values["desiredCurvature"] = float(active_policy().update(
+        outputs, values["desiredCurvature"], v_ego, blinkers_active, lane_policy_enabled,
+        lateral_active, steering_pressed, frame_time))
+      return log.ModelDataV2.Action(**values)
     except Exception:
       self._clear_replays()
       self.failed = True
