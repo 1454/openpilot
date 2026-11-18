@@ -4,15 +4,17 @@ from dataclasses import dataclass
 from pathlib import Path
 import hashlib
 import json
+import logging
 import time
 
 from openpilot.starpilot.flm.offroad_analysis import cohort, _spread
 from openpilot.starpilot.flm.offroad_processor import collect_route_inputs, window_demand
-from openpilot.starpilot.flm.offroad_route import LOCAL_ID, MAX_SEGMENTS, MAX_TOTAL_BYTES, MAX_ANALYSIS_SECONDS, RETAIN, SelectedSourceReceipt
+from openpilot.starpilot.flm.offroad_route import (
+  LOCAL_ID, MAX_SEGMENTS, MAX_TOTAL_BYTES, MAX_ANALYSIS_SECONDS, RETAIN, SelectedSourceReceipt, RouteInputError, route_reader, route_inventory,
+)
 from openpilot.starpilot.flm.log_decode import decode_full_rlog_segment
 from openpilot.starpilot.flm.runtime_adapter_registry import car_params_digest
 from openpilot.starpilot.galaxy.drive_analysis import _selected, _route_names, _closed_source
-from openpilot.starpilot.galaxy.drive_history import DriveHistory
 
 
 @dataclass(frozen=True)
@@ -26,8 +28,9 @@ class PriorOriginals:
   profile_metadata: dict | None = None
 
 
-class PriorIdentityMismatch(ValueError):
-  pass
+class PriorIdentityMismatch(RouteInputError):
+  def __init__(self, reason):
+    super().__init__(None, reason)
 
 
 def interior_segments(count):
@@ -43,7 +46,8 @@ def selected_segments(count, *, expanded=False):
   return tuple(sorted(selected))
 
 
-def _selected_sources(root, route, *, permitted, consume, cp_sha256, expanded=False):
+@route_reader
+def _selected_sources(root, route, *, permitted, consume, cp_sha256, expanded=False, validate_preroll=False):
   root = Path(root)
   route_id, names = _selected(route)
   if not LOCAL_ID.fullmatch(route_id) or not 1 <= len(names) <= MAX_SEGMENTS or set(names) != _route_names(root, route_id, permitted):
@@ -53,6 +57,7 @@ def _selected_sources(root, route, *, permitted, consume, cp_sha256, expanded=Fa
   total = 0
   start, end, clock, actual_cp = None, 0, None, None
   ended = False
+  expected_cp = cp_sha256
   for number, name in enumerate(names):
     if not permitted():
       raise ValueError('Independent input collection cancelled')
@@ -63,6 +68,10 @@ def _selected_sources(root, route, *, permitted, consume, cp_sha256, expanded=Fa
         raise ValueError('Prior recording input bound')
       receipts.append((name, hashlib.sha256(raw).hexdigest(), len(raw)))
       revisions.append(revision)
+      if validate_preroll and number not in selected and number + 1 in selected:
+        # Native replay needs this original warm-up segment too. Reject an
+        # unreadable prior before freezing its independent input partition.
+        decode_full_rlog_segment(raw, codec, cancelled=lambda: not permitted(), retain=RETAIN)
       if number in selected:
         events = decode_full_rlog_segment(raw, codec, cancelled=lambda: not permitted(), retain=RETAIN)
         for event in events:
@@ -72,7 +81,13 @@ def _selected_sources(root, route, *, permitted, consume, cp_sha256, expanded=Fa
             end = max(end, stamp)
           if kind == 'carParams':
             actual_cp = car_params_digest(event.carParams)
-            if actual_cp != cp_sha256:
+            if expected_cp is None:
+              from openpilot.starpilot.flm.offroad_evidence import torque_vehicle
+
+              if not torque_vehicle(event.carParams):
+                raise PriorIdentityMismatch('Original torque vehicle required')
+              expected_cp = actual_cp
+            if actual_cp != expected_cp:
               raise PriorIdentityMismatch('Prior vehicle differs')
           elif kind == 'starpilotLateralState' and event.valid and event.starpilotLateralState.learningEvidence.version == 1:
             value = event.starpilotLateralState.learningEvidence
@@ -89,7 +104,8 @@ def _selected_sources(root, route, *, permitted, consume, cp_sha256, expanded=Fa
         del events
       if not current() or not permitted():
         raise ValueError('Independent source changed')
-  if not ended or actual_cp is None or actual_cp != cp_sha256 or start is None or not start < end or clock is None or not 0 <= end - clock[0] <= 10_000_000_000:
+  if (not ended or actual_cp is None or actual_cp != expected_cp or start is None or
+      not start < end or clock is None or not 0 <= end - clock[0] <= 10_000_000_000):
     raise ValueError('Closed prior input identity/clock unavailable')
   if set(names) != _route_names(root, route_id, permitted):
     raise ValueError('Prior recording inventory changed')
@@ -103,9 +119,7 @@ def _selected_sources(root, route, *, permitted, consume, cp_sha256, expanded=Fa
 
 def _prior_originals(assessment, group, selected_cohort, root, *, permitted, stable):
   """Freeze the latest compatible older input set BEFORE any strength is fitted."""
-  inventory = DriveHistory(Path(root), max_segments_per_route=MAX_SEGMENTS).snapshot()
-  if inventory['scanIncomplete']:
-    raise ValueError('Prior drive inventory incomplete')
+  inventory = route_inventory(root)
   current = assessment.receipt.route_id
   if not LOCAL_ID.fullmatch(current):
     raise ValueError('Original local latest route required')
@@ -125,14 +139,24 @@ def _prior_originals(assessment, group, selected_cohort, root, *, permitted, sta
   for _, _, route in sorted(candidates):
 
     def walk(actual_root, original_route, *, permitted, consume):
-      return _selected_sources(actual_root, original_route, permitted=permitted, consume=consume, cp_sha256=assessment.receipt.cp_sha256, expanded=stable)
+      return _selected_sources(actual_root, original_route, permitted=permitted, consume=consume,
+                               cp_sha256=assessment.receipt.cp_sha256, expanded=stable, validate_preroll=True)
 
     try:
       collected = collect_route_inputs(root, route, permitted=allowed, walker=walk)
     except PriorIdentityMismatch:
       continue
+    except RouteInputError as error:
+      logging.getLogger(__name__).warning('Skipping prior drive %s: %s', route['routeId'], error)
+      continue
     if collected.receipt.completed_wall_ns >= assessment.receipt.completed_wall_ns:
-      raise ValueError('Independent prior chronology invalid')
+      logging.getLogger(__name__).warning('Skipping prior drive %s: independent chronology invalid', route['routeId'])
+      continue
+    from openpilot.starpilot.flm.offroad_route import original_segment_hashes
+
+    if original_segment_hashes(collected.receipt.segments).intersection(original_segment_hashes(assessment.receipt.segments)):
+      logging.getLogger(__name__).warning('Skipping prior drive %s: original recording bytes overlap the current drive', route['routeId'])
+      continue
     compatible = []
     profile_windows = {}
     if stable:
@@ -143,20 +167,21 @@ def _prior_originals(assessment, group, selected_cohort, root, *, permitted, sta
       metadata = collected.context_metadata[context]
       if json.dumps({k: metadata.get(k) for k in expected}, sort_keys=True, allow_nan=False) != json.dumps(expected, sort_keys=True, allow_nan=False):
         continue
-      compatible.extend((w, metadata) for w in windows if cohort(w) == selected_cohort['cohort'])
+      # Keep the original metadata key: point comparison keys deliberately omit route values.
+      compatible.extend((w, metadata, context) for w in windows if cohort(w) == selected_cohort['cohort'])
     # Choose a single original model context by input coverage, never by error.
-    contexts = {w.points[0].context_key for w, _ in compatible}
+    contexts = {w.points[0].context_key for w, _, _ in compatible}
     if not contexts:
       continue
-    context = min(contexts, key=lambda key: (-len({w.points[0].segment for w, _ in compatible if w.points[0].context_key == key}), key))
-    compatible = [(w, metadata) for w, metadata in compatible if w.points[0].context_key == context]
+    context = min(contexts, key=lambda key: (-len({w.points[0].segment for w, _, _ in compatible if w.points[0].context_key == key}), key))
+    compatible = [(w, metadata, original_context) for w, metadata, original_context in compatible if w.points[0].context_key == context]
     chosen = []
     tracking = []
     input_segments = (
       tuple(n for n in collected.receipt.decoded_segments if 0 < n < len(route['segments']) - 1) if stable else interior_segments(len(route['segments']))
     )
     for number in input_segments:
-      windows = sorted(((w, m) for w, m in compatible if w.points[0].segment == number), key=lambda row: row[0].points[0].mono_ns)
+      windows = sorted(((w, m) for w, m, _ in compatible if w.points[0].segment == number), key=lambda row: row[0].points[0].mono_ns)
       if windows:
         w, metadata = windows[0]
         tracking.append(w)
@@ -174,7 +199,12 @@ def _prior_originals(assessment, group, selected_cohort, root, *, permitted, sta
     if stable:
       for number in input_segments:
         candidates = sorted(
-          (w for w in profile_windows.get(context, ()) if w.points[0].segment == number and cohort(w) == selected_cohort['cohort']),
+          (
+            w
+            for original_context in sorted({key for _, _, key in compatible})
+            for w in profile_windows.get(original_context, ())
+            if w.points[0].context_key == context and w.points[0].segment == number and cohort(w) == selected_cohort['cohort']
+          ),
           key=lambda w: w.points[0].mono_ns,
         )
         if candidates:
@@ -192,7 +222,7 @@ def _prior_originals(assessment, group, selected_cohort, root, *, permitted, sta
         tuple(chosen),
         tuple(tracking),
         tuple(profile_spans),
-        collected.context_metadata[context] if stable else None,
+        collected.context_metadata[compatible[0][2]] if stable else None,
       )
   return None
 

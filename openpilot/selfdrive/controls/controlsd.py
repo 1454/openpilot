@@ -20,6 +20,7 @@ from opendbc.car.car_helpers import interfaces
 from opendbc.car.gm.values import CAR as GM_CAR
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.drive_helpers import MAX_LATERAL_ACCEL_NO_ROLL, clip_curvature
+from openpilot.selfdrive.controls.lib.highway_correction_gain import HighwayCorrectionGain, predicted_lateral_accels, read_gain
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.lateral_controller_factory import create_lateral_controller
@@ -52,6 +53,7 @@ from openpilot.starpilot.lateral.lane_change_preferences import LiveLaneChangePo
 from openpilot.starpilot.lateral.lane_change_smoothing import LaneChangeSmoother, limit_rate
 from openpilot.starpilot.lateral.lane_runtime import LaneCenteringHost, runtime_supported as lane_runtime_supported
 from openpilot.starpilot.lateral.torque_runtime import TorqueHost, runtime_enabled as torque_runtime_enabled
+from openpilot.starpilot.feature_capabilities import lateral_supported
 from openpilot.starpilot.lateral.controller_selection import learning_allowed, read_selection
 from openpilot.starpilot.lateral.gain_runtime import create_gain_owner
 from openpilot.starpilot.flm.global_runtime import GlobalRuntime
@@ -88,6 +90,10 @@ class Controls:
     from openpilot.starpilot.car.subaru.smoothing import read_frozen
 
     self.subaru_smoothing = read_frozen(self.CP, self.params)
+    from openpilot.starpilot.car.volkswagen.model_smoothing import ControlSmoothing
+    self.volkswagen_smoothing = ControlSmoothing(self.CP)
+    from openpilot.starpilot.car.hyundai.model_smoothing import seconds as kona_smoothing
+    self.kona_smoothing = kona_smoothing(self.CP)
 
     self.CI = interfaces[self.CP.carFingerprint](self.CP)
     self.hyundai_lateral_fault = LateralFaultLatch(self.CP.carFingerprint)
@@ -134,6 +140,9 @@ class Controls:
     self.lane_centering_controller = (
       LaneCenteringController(body=interface_dimensions(self.CI, self.CP), body_required=True) if predict_lane_clearance else LaneCenteringController()
     )
+    self.highway_correction_gain = HighwayCorrectionGain()
+    self.highway_smoothing_supported = lateral_supported(self.CP)
+    self.highway_gain = read_gain(self.params) if self.highway_smoothing_supported else 1.0
     self.lateral_pause = LateralPause(read_lateral_pause(self.params), self.params)
     self.lane_change_preferences = LiveLaneChangePolicy(self.params, now_ns=0 if os.getenv('REPLAY') == '1' else time.monotonic_ns())
     self.lane_change_policy = self.lane_change_preferences.applied
@@ -160,7 +169,8 @@ class Controls:
     )
     if isinstance(self.LaC, LatControlTorque):
       # Only the actual startup owner reads configuration; replay clones stay pure.
-      if manual_effects is not None and manual_effects.profile.context[1] != str(self.LaC.controller_mode):
+      if manual_effects is not None and (manual_effects.profile.context[1] != str(self.LaC.controller_mode) or
+                                         not manual_effects.compatible(self.CP, self.CI, self.LaC, self.params)):
         manual_effects, manual_status = None, 'context_changed'
       self.LaC.manual_flm_effects, self.LaC.manual_flm_status = manual_effects, manual_status
       self.lateral_gain_owner = create_gain_owner(self.params, self.CP, self.LaC)
@@ -226,7 +236,7 @@ class Controls:
 
       manual_effects, manual_status = load_manual_coordinates(self.CP, self.lateral_controller_selection.mode, self.params)
     self.torque_learning_allowed = bool(
-      manual_status == 'not_configured' and learning_allowed(self.params, self.CP, selection=self.lateral_controller_selection)
+      manual_status in ('not_configured', 'configured') and learning_allowed(self.params, self.CP, selection=self.lateral_controller_selection)
     )
     return manual_effects, manual_status
 
@@ -556,12 +566,14 @@ class Controls:
 
     # accel PID loop
     publish_takeoff_state = getattr(self.LoC, 'takeoff_starting', False)
-    pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
+    longitudinal_context = self.longitudinal_inputs.context(CC.longActive)
+    pid_accel_limits = self.CI.get_pid_accel_limits(
+      self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS, faster_takeoffs=longitudinal_context.faster_takeoffs)
     from opendbc.car.tesla.preap.pedal_profile import accel_limits as preap_pedal_limits
 
     pid_accel_limits = preap_pedal_limits(self.CP, CS.vEgo, getattr(self.sm['selfdriveState'].personality, 'raw', 1), pid_accel_limits)
     longitudinal_output = self.LoC.update(
-      CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits, context=self.longitudinal_inputs.context(CC.longActive)
+      CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits, context=longitudinal_context
     )
     actuators.accel = final_output(longitudinal_output)
     if self.longitudinal_inputs.publish_state or publish_takeoff_state:
@@ -578,26 +590,51 @@ class Controls:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
     assist = self.turn_assist_enabled()
     rolling = math.isfinite(CS.vEgo) and CS.vEgo > max(0.1 * CV.MPH_TO_MS, self.CP.minSteerSpeed)
-    if (
+    assist_ready = (
       assist
-      and rolling
       and self.sm.all_checks(['modelV2'])
       and CC.latActive
-      and not CS.standstill
       and not CS.steerFaultTemporary
       and not CS.steerFaultPermanent
       and CS.gearShifter in (car.CarState.GearShifter.drive, car.CarState.GearShifter.low)
-    ):
+    )
+    if assist_ready and rolling and not CS.standstill:
       self.model_turn_assist.curvature = self.curvature
-      self.model_turn_assist.twitch_guard_remaining = update_twitch_guard(self.model_turn_assist.twitch_guard_remaining, CS.vEgo, CS.standstill)
+      self.model_turn_assist.twitch_guard_armed = update_twitch_guard(self.model_turn_assist.twitch_guard_armed, CS.vEgo, CS.standstill)
       new_desired_curvature = self.model_turn_assist.update(CS, model_v2, CC, new_desired_curvature)
+    elif assist_ready:
+      self.model_turn_assist.curvature = self.curvature
+      new_desired_curvature = self.model_turn_assist.update_stopped(CS, new_desired_curvature)
+      self.model_turn_assist.twitch_guard_armed = update_twitch_guard(self.model_turn_assist.twitch_guard_armed, CS.vEgo, CS.standstill)
     elif getattr(self, 'model_turn_assist', None) is not None:
       self.model_turn_assist.reset()
-      self.model_turn_assist.twitch_guard_remaining = update_twitch_guard(0.0, CS.vEgo, CS.standstill)
+      self.model_turn_assist.twitch_guard_armed = update_twitch_guard(False, CS.vEgo, CS.standstill)
+    if self.highway_smoothing_supported:
+      if self.sm.frame % 100 == 0:
+        self.highway_gain = read_gain(self.params)
+      predicted = None
+      if self.sm.all_checks(['modelV2']):
+        predicted = predicted_lateral_accels(model_v2.position.t, model_v2.velocity.x, model_v2.orientationRate.z)
+      # before lane centering so its guard measures only its own correction against the smoothed base
+      new_desired_curvature = self.highway_correction_gain.update(
+        new_desired_curvature,
+        CS.vEgo,
+        CC.latActive,
+        self.highway_gain,
+        bypass=bool(
+          CS.leftBlinker
+          or CS.rightBlinker
+          or CS.steeringPressed
+          or model_v2.meta.laneChangeState != LaneChangeState.off
+          or self.sm.valid['lateralManeuverPlan']
+        ),
+        predicted=predicted,
+      )
     lane_base_curvature = new_desired_curvature
     self.lane_centering_applied = 0.0
     self.lane_centering_inactive_reason = 'inactive'
     self.last_lane_centering_result = None
+    kona_tau = getattr(self, "kona_smoothing", 0.)
     lane_delay = None
     if lane_centering is None and self.lane_centering_host is not None:
       now_ns = int(self.sm.logMonoTime['carState']) if os.getenv('REPLAY') == '1' else time.monotonic_ns()
@@ -612,6 +649,8 @@ class Controls:
     else:
       lane_now_ns = int(self.sm.logMonoTime['carState']) if os.getenv('REPLAY') == '1' else time.monotonic_ns()
       lane_delay = current_delay(self.sm, lane_now_ns)
+      if lane_delay is not None:
+        lane_delay += kona_tau
       result = self.lane_centering_controller.update(
         LaneCenteringInput(
           model=model_v2,
@@ -664,7 +703,9 @@ class Controls:
       self.lane_centering_applied = self.desired_curvature - baseline_curvature
     from openpilot.starpilot.car.subaru.smoothing import seconds as subaru_smooth_seconds, control_maximum
 
-    lat_delay = self.sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS + subaru_smooth_seconds(CS.vEgo, control_maximum(self))
+    lat_delay = self.sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS + subaru_smooth_seconds(CS.vEgo, control_maximum(self)) + kona_tau
+    if getattr(self, "volkswagen_smoothing", None) is not None:
+      lat_delay += self.volkswagen_smoothing.seconds(int(self.sm.logMonoTime["modelV2"]), time.monotonic_ns())
     if sierra_lateral and not getattr(self, '_custom_steer_delay', False):
       lat_delay = (SIERRA_ACTUATOR_DELAY + 0.2) + LAT_SMOOTH_SECONDS
     if hasattr(self, "CI"):
@@ -906,6 +947,8 @@ class Controls:
       valid=bool(CS.canValid and self.sm.all_checks(['modelV2'])),
       inactive_reason=getattr(self, 'lane_centering_inactive_reason', 'inactive'),
     )
+    from openpilot.starpilot.lateral.applied_tuning import write_applied_tuning
+    write_applied_tuning(feedback.starpilotLateralState, self.LaC, getattr(self, 'torque_host', None))
     automatic = getattr(self, 'global_learning', None)
     if automatic is not None:
       try:

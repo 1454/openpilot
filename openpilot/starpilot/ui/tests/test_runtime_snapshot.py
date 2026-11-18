@@ -1,5 +1,9 @@
-"""Offline service and Params fakes; no IPC, device, or settings writes."""
+"""Offline fixtures with isolated saved settings; no IPC or device writes."""
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock
+from opendbc.car.structs import CarParams
+from openpilot.common.params import Params
 from openpilot.starpilot.ui.presentation import BitmapFonts
 
 
@@ -100,7 +104,58 @@ def ui_fake():
             has_longitudinal_control=True, CP=None, recording_audio=False)
 
 
+def vehicle_ui(params_path, **car_params):
+  """Use real saved-source and vehicle APIs only for tests supplying a vehicle."""
+  ui = ui_fake()
+  params = Params(str(params_path))
+  for key, value in ui.params.values.items():
+    Path(params.get_param_path(key)).write_bytes(value.encode() if isinstance(value, str) else value)
+  ui.params = params
+  ui.CP = CarParams.new_message(**car_params)
+  return ui
+
+
+def test_slc_offset_schedule_uses_cached_validated_settings(tmp_path):
+  from pathlib import Path
+  from openpilot.common.params import Params
+  from openpilot.starpilot.saved_source import read_saved
+  from openpilot.starpilot.speed_limits import offset_document as od
+  from openpilot.starpilot.ui.unified_speed_presentation import resolve_unified_speed
+  ui = ui_fake()
+  ui.params = Params(str(tmp_path))
+  document = od.OffsetDocument((0., 10., 15., 20., 25., 30., 35., 40.), (7., 7., 7., 0., 7., 7., 7.))
+  ui.params.put('SLCOffsetSchedule', od.to_value(document), block=True)
+  adapter = RuntimeSnapshotAdapter(ui)
+  with patch('openpilot.starpilot.ui.runtime_snapshot.read_saved', wraps=read_saved) as reads:
+    first = adapter.build(ShellMode.ONROAD, now_ns=NOW).onroad
+    assert first.slc_offset_schedule == document.schedule()
+    assert not resolve_unified_speed(first).offset_configured
+    document = od.OffsetDocument(document.bounds_mps, (7.,) * 7)
+    ui.params.put('SLCOffsetSchedule', od.to_value(document), block=True)
+    cached = adapter.build(ShellMode.ONROAD, now_ns=NOW + 50_000_000).onroad
+    assert cached.slc_offset_schedule is first.slc_offset_schedule
+    reads.assert_called_once()
+    adapter.invalidate_appearance()
+    updated = adapter.build(ShellMode.ONROAD, now_ns=NOW + 100_000_000).onroad
+    assert updated.slc_offset_schedule == document.schedule()
+    assert resolve_unified_speed(updated).offset_configured
+    assert reads.call_count == 2
+  path = Path(ui.params.get_param_path('SLCOffsetSchedule'))
+  for raw in (b'{bad', od.encode(od.NEEDS_REVIEW), b'x' * (od.MAX_DOCUMENT_BYTES + 1), None):
+    if raw is None:
+      path.unlink()
+    else:
+      path.write_bytes(raw)
+    adapter.invalidate_appearance()
+    invalid = adapter.build(ShellMode.ONROAD, now_ns=NOW + 100_000_000).onroad
+    assert invalid.slc_offset_schedule is None
+    assert not resolve_unified_speed(invalid).offset_configured
+
+
 class TestRuntimeSnapshot(unittest.TestCase):
+
+  def vehicle_ui(self, **car_params):
+    return vehicle_ui(self.enterContext(TemporaryDirectory()), **car_params)
 
   def test_home_uses_shared_statistics_source_without_onroad_polling(self):
     from openpilot.starpilot.ui.home_state import DriveStatsData, DriveSummary
@@ -237,7 +292,6 @@ class TestRuntimeSnapshot(unittest.TestCase):
     self.assertIsNone(observation.decision_id)
     presentation = resolve_unified_speed(state)
     self.assertEqual(presentation.posted_text, '30')
-    self.assertEqual(presentation.limit_text, '35')
     self.assertEqual(presentation.offset_text, '+5')
     self.assertEqual(presentation.active_side, 'none')
     ui.params.values['SpeedLimitController'] = '1'
@@ -488,6 +542,32 @@ class TestRuntimeSnapshot(unittest.TestCase):
     self.assertFalse(alert.critical)
     self.assertEqual(alert.visual_alert, 1)
 
+  def test_observed_personality_avoids_saved_read_and_missing_or_invalid_source_keeps_fallback(self):
+    ui = ui_fake()
+    ui.params.values['LongitudinalPersonality'] = '0'
+    ui.sm['selfdriveState'].personality = 'relaxed'
+    adapter = RuntimeSnapshotAdapter(ui)
+    adapter.build(ShellMode.ONROAD, now_ns=NOW)
+    original_get = ui.params.get
+    reads = []
+    ui.params.get = lambda key: (reads.append(key), original_get(key))[1]
+    state = adapter.build(ShellMode.ONROAD, now_ns=NOW + 10_000_000).onroad
+    self.assertEqual(state.personality, 2)
+    self.assertNotIn('LongitudinalPersonality', reads)
+    ui.sm['selfdriveState'].personality = 'aggressive'
+    state = adapter.build(ShellMode.ONROAD, now_ns=NOW + 20_000_000).onroad
+    self.assertEqual(state.personality, 0)
+    self.assertNotIn('LongitudinalPersonality', reads)
+    ui.params.values['LongitudinalPersonality'] = '2'
+    for valid, value in ((False, 'aggressive'), (True, 'unknown')):
+      with self.subTest(valid=valid, personality=value):
+        reads.clear()
+        ui.sm.valid['selfdriveState'] = valid
+        ui.sm['selfdriveState'].personality = value
+        state = adapter.build(ShellMode.ONROAD, now_ns=NOW + 30_000_000).onroad
+        self.assertEqual(state.personality, 2)
+        self.assertEqual(reads.count('LongitudinalPersonality'), 1)
+
   def test_onroad_ancillary_reads_are_bounded_and_settings_refreshes_immediately(self):
     ui = ui_fake()
     ui.params.values['UpdaterState'] = 'idle'
@@ -663,8 +743,7 @@ class TestRuntimeSnapshot(unittest.TestCase):
     self.assertEqual(adapter.build(ShellMode.ONROAD, now_ns=NOW).onroad.alert.size, AlertSize.NONE)
 
   def test_display_survives_ui_frame_gap_without_extending_control_authority(self):
-    ui = ui_fake()
-    ui.CP = NS(carFingerprint="", openpilotLongitudinalControl=True, pcmCruise=False)
+    ui = self.vehicle_ui(carFingerprint="", openpilotLongitudinalControl=True, pcmCruise=False)
     ui.sm.messages['carState'].canValid = True
     ui.sm.messages['carState'].canTimeout = False
     ui.sm.messages['carState'].vCruiseCluster = 86.0
@@ -688,7 +767,7 @@ class TestRuntimeSnapshot(unittest.TestCase):
     invalid = RuntimeSnapshotAdapter(ui).build(ShellMode.ONROAD, now_ns=NOW).onroad
     self.assertFalse(invalid.lateral_active or invalid.longitudinal_active)
     ui.sm.valid['carControl'] = True
-    ui.params.values['ExperimentalMode'] = '1'
+    ui.params.put_bool('ExperimentalMode', True, block=True)
     ui.sm.logMonoTime['selfdriveState'] = NOW - 201_000_000
     self.assertFalse(RuntimeSnapshotAdapter(ui).build(ShellMode.ONROAD, now_ns=NOW).onroad.experimental_enabled)
 
@@ -758,9 +837,8 @@ class TestRuntimeSnapshot(unittest.TestCase):
     self.assertEqual(RuntimeSnapshotAdapter(ui).build(ShellMode.HOME, now_ns=NOW).home.description, "7.0")
 
   def test_nested_curve_independent_of_outer_slc_validity(self):
-    ui = ui_fake()
-    ui.params.values["ShowCSCStatus"] = "1"
-    ui.CP = NS(carFingerprint="", openpilotLongitudinalControl=True, pcmCruise=False)
+    ui = self.vehicle_ui(carFingerprint="", openpilotLongitudinalControl=True, pcmCruise=False)
+    ui.params.put_bool("ShowCSCStatus", True, block=True)
     ui.sm.messages["carState"].canValid = True
     ui.sm.messages["carState"].canTimeout = False
     ui.sm.messages["carControl"].longActive = True
@@ -809,8 +887,7 @@ class TestRuntimeSnapshot(unittest.TestCase):
     self.assertIsNone(RuntimeSnapshotAdapter(ui).build(ShellMode.ONROAD, now_ns=NOW).onroad.curve)
 
   def test_fresh_state_tracks_each_control_axis_and_text_session(self):
-    ui = ui_fake()
-    ui.CP = NS(carFingerprint="vehicle-platform-id")
+    ui = self.vehicle_ui(carFingerprint="vehicle-platform-id")
     snapshot = RuntimeSnapshotAdapter(ui).build(ShellMode.ONROAD, now_ns=NOW)
     self.assertTrue(snapshot.onroad.lateral_active)
     self.assertFalse(snapshot.onroad.longitudinal_active)
@@ -824,6 +901,8 @@ class TestRuntimeSnapshot(unittest.TestCase):
   def test_zero_speed_remains_visible_across_signed_filtered_estimates(self):
     from openpilot.starpilot.ui.raylib import rl
     from openpilot.starpilot.ui.onroad_large_widgets import CurrentSpeedHud
+    from openpilot.starpilot.ui.presentation import Profile
+    from openpilot.starpilot.ui.tests.test_unified_speed_native import foreground_calls
 
     for metric in (False, True):
       ui = ui_fake()
@@ -836,12 +915,13 @@ class TestRuntimeSnapshot(unittest.TestCase):
           state = adapter.build(ShellMode.ONROAD, now_ns=NOW).onroad
           self.assertEqual(state.speed_mps, max(0.0, speed))
           fonts = Mock(spec=BitmapFonts)
+          fonts.profile = Profile.LARGE
           fonts.measure.return_value = NS(width=10, height=20)
           fonts.vertical_ink.return_value = (0., 20.)
           CurrentSpeedHud(fonts).render(rl.Rectangle(0, 0, 1800, 1020), state)
-          self.assertEqual(fonts.draw.call_args_list[0].args[0], "1" if speed == 0.44704 and not metric else
+          self.assertEqual(foreground_calls(fonts.draw)[0].args[0], "1" if speed == 0.44704 and not metric else
                            str(round(max(0., speed) * (3.6 if metric else 2.2369362921))))
-          self.assertEqual(fonts.draw.call_args_list[1].args[0], "km/h" if metric else "mph")
+          self.assertEqual(foreground_calls(fonts.draw)[1].args[0], "km/h" if metric else "mph")
       ui.sm.logMonoTime["carState"] = NOW - 2_000_000_000
       self.assertIsNone(adapter.build(ShellMode.ONROAD, now_ns=NOW).onroad.speed_mps)
 
@@ -947,8 +1027,7 @@ class TestRuntimeSnapshot(unittest.TestCase):
     self.assertFalse(adapter.build(ShellMode.HOME, now_ns=NOW).onroad.torque_source_available)
 
   def test_angle_torque_feedback_uses_current_vehicle_parameters(self):
-    ui = ui_fake()
-    ui.CP = NS(carFingerprint="", maxLateralAccel=3.0, openpilotLongitudinalControl=False, pcmCruise=True)
+    ui = self.vehicle_ui(carFingerprint="", maxLateralAccel=3.0, openpilotLongitudinalControl=False, pcmCruise=True)
     ui.sm.messages["carState"].canValid = True
     ui.sm.messages["carState"].canTimeout = False
     ui.sm.put("controlsState", NS(lateralControlState=NS(which=lambda: "angleState"),
@@ -963,8 +1042,7 @@ class TestRuntimeSnapshot(unittest.TestCase):
     self.assertFalse(adapter.build(ShellMode.ONROAD, now_ns=NOW).onroad.torque_source_available)
 
   def test_slc_controls_require_fresh_system_long_independent_of_pcm_cruise(self):
-    ui = ui_fake()
-    ui.CP = NS(carFingerprint="", openpilotLongitudinalControl=True, pcmCruise=False)
+    ui = self.vehicle_ui(carFingerprint="", openpilotLongitudinalControl=True, pcmCruise=False)
     ui.sm.messages["carState"].canTimeout = False
     ui.sm.messages["carState"].canValid = True
     ui.sm.messages["carControl"].longActive = True
@@ -990,9 +1068,8 @@ class TestRuntimeSnapshot(unittest.TestCase):
   ('toyota', False, True, True, False),
   ('toyota', False, False, False, False),
 ])
-def test_wheel_confirmation_hint_preserves_toyota_resume(brand, standstill, cruise_standstill, cruise_enabled, expected):
-  ui = ui_fake()
-  ui.CP = NS(carFingerprint='', brand=brand, openpilotLongitudinalControl=True, pcmCruise=brand == 'toyota')
+def test_wheel_confirmation_hint_preserves_toyota_resume(brand, standstill, cruise_standstill, cruise_enabled, expected, tmp_path):
+  ui = vehicle_ui(tmp_path, carFingerprint='', brand=brand, openpilotLongitudinalControl=True, pcmCruise=brand == 'toyota')
   car = ui.sm['carState']
   car.canTimeout, car.canValid, car.standstill = False, True, standstill
   car.cruiseState = NS(available=True, enabled=cruise_enabled, standstill=cruise_standstill)

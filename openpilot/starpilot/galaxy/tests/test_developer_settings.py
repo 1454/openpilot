@@ -9,9 +9,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from openpilot.starpilot.galaxy.developer_settings import (CALIBRATION_RESET, DRIVER_MONITORING_RESET, STARPORT_HEADING_KEY,
-                                                          STARPORT_HEVC_KEY, STARPORT_NEW_SETUP_KEY, STARPORT_WIFI_KEY,
-                                                          DeveloperSettingsOwner)
+from openpilot.starpilot.galaxy.developer_settings import (CALIBRATION_RESET, DRIVER_MONITORING_RESET, STARPORT_EXPERIMENT_PREFIX,
+                                                          STARPORT_EXPERIMENTS_KEY,
+                                                          STARPORT_HEADING_KEY, STARPORT_HEVC_KEY, STARPORT_KEYFRAME_TEST_KEY,
+                                                          STARPORT_TALL_HEVC_KEY, STARPORT_UNACKED_VIDEO_KEY, STARPORT_PATIENT_TCP_KEY,
+                                                          STARPORT_NEW_SETUP_KEY, STARPORT_WIFI_KEY, DeveloperSettingsOwner)
 from openpilot.starpilot.galaxy.settings import AuthorityContext, ContextSource, SettingsChanged, SettingsGateway
 from openpilot.starpilot.longitudinal.voacc import KEY, selected
 from openpilot.starpilot.system.starport import new_setup
@@ -45,6 +47,8 @@ class FileParams:
 class FakeStarPort:
   def __init__(self, enabled=False, running=True):
     self.enabled, self.running, self.hevc = enabled, running, False
+    self.keyframe_test = self.tall_hevc = self.unacked_video = self.patient_tcp = False
+    self.experiments, self.rules = False, []
 
   def call(self, command, **payload):
     if not self.running:
@@ -55,7 +59,27 @@ class FakeStarPort:
     if command == "set_allow_hevc":
       self.hevc = payload["enabled"]
       return {"ok": True}
-    return {"ok": True, "status": {"dedicated_wifi_interface": self.enabled, "allow_hevc": self.hevc}}
+    if command == "set_keyframe_test":
+      self.keyframe_test = payload["enabled"]
+      return {"ok": True}
+    if command == "set_tall_hevc":
+      self.tall_hevc = payload["enabled"]
+      return {"ok": True}
+    if command == "set_patient_tcp":
+      self.patient_tcp = payload["enabled"]
+      return {"ok": True}
+    if command == "set_unacked_video":
+      self.unacked_video = payload["enabled"]
+      return {"ok": True}
+    if command == "set_head_unit_experiments":
+      self.experiments = payload["enabled"]
+      return {"ok": True}
+    if command == "set_head_unit_experiment_rule":
+      self.rules = sorted(set(self.rules) | {payload["rule"]} if payload["enabled"] else set(self.rules) - {payload["rule"]})
+      return {"ok": True, "changed": True}
+    return {"ok": True, "status": {"dedicated_wifi_interface": self.enabled, "allow_hevc": self.hevc, "keyframe_test": self.keyframe_test,
+                                   "tall_hevc": self.tall_hevc, "unacked_video": self.unacked_video, "patient_tcp": self.patient_tcp,
+                                   "head_unit_experiments": self.experiments, "head_unit_experiment_rules": self.rules}}
 
 
 class DeveloperSettingsTest(unittest.TestCase):
@@ -72,6 +96,31 @@ class DeveloperSettingsTest(unittest.TestCase):
     patch.start()
     self.addCleanup(patch.stop)
     self.flag = flag
+
+  def test_always_hold_default_registry_exact_save_and_parked_authority(self):
+    from openpilot.common.params import Params, ParamKeyType
+    from openpilot.starpilot.longitudinal.enhanced_stop_hold import KEY as HOLD_KEY, LABEL, DESCRIPTION, selected as hold_selected
+    params = Params(str(self.params.root.parent / "hold-params"))
+    self.assertTrue(params.check_key(HOLD_KEY))
+    self.assertEqual(params.get_type(HOLD_KEY), ParamKeyType.BOOL)
+    self.assertIs(params.get_default_value(HOLD_KEY), False)
+    owner = DeveloperSettingsOwner(params, lambda: self.parked)
+    row = next(row for row in owner.snapshot().rows if row.key == HOLD_KEY)
+    self.assertEqual((row.label, row.value, row.reason), (LABEL, "Off", DESCRIPTION))
+    self.assertTrue(owner.apply(FeatureSettingsRequest(HOLD_KEY, row.source, "On")))
+    self.assertTrue(hold_selected(params))
+    self.assertFalse(owner.apply(FeatureSettingsRequest(HOLD_KEY, row.source, "Off")))
+    self.parked = False
+    self.assertFalse(next(row for row in owner.snapshot().rows if row.key == HOLD_KEY).available)
+    self.assertFalse(owner.apply(FeatureSettingsRequest(HOLD_KEY, b"1", "Off")))
+    self.parked = True
+    self.assertTrue(owner.apply(FeatureSettingsRequest(HOLD_KEY, b"1", "Off")))
+    self.assertFalse(hold_selected(params))
+    path = Path(params.get_param_path(HOLD_KEY))
+    for raw in (b"", b"true", b"1\n", b"1" * 9):
+      path.write_bytes(raw)
+      self.assertFalse(hold_selected(params))
+      self.assertFalse(owner.apply(FeatureSettingsRequest(HOLD_KEY, raw, "On")))
 
   def test_default_off_strict_selection_and_vehicle_admission(self):
     self.assertEqual(self.owner.snapshot().rows[0].value, "Off")
@@ -219,7 +268,8 @@ class DeveloperSettingsTest(unittest.TestCase):
     owner = DeveloperSettingsOwner(self.params, lambda: self.parked, starport=lambda: service)
     rows = owner.snapshot().rows
     keys = [row.key for row in rows]
-    self.assertEqual(keys[keys.index(STARPORT_HEADING_KEY):], [STARPORT_HEADING_KEY, STARPORT_NEW_SETUP_KEY, STARPORT_WIFI_KEY, STARPORT_HEVC_KEY])
+    self.assertEqual(keys[keys.index(STARPORT_HEADING_KEY):keys.index(STARPORT_HEVC_KEY) + 1],
+                     [STARPORT_HEADING_KEY, STARPORT_NEW_SETUP_KEY, STARPORT_WIFI_KEY, STARPORT_HEVC_KEY])
     row = rows[keys.index(STARPORT_HEVC_KEY)]
     self.assertEqual((row.value, row.default_value, row.available), ("Off", "Off", True))
     self.assertTrue(owner.apply(FeatureSettingsRequest(STARPORT_HEVC_KEY, row.source, "On")))
@@ -230,6 +280,107 @@ class DeveloperSettingsTest(unittest.TestCase):
     self.parked = True
     service.running = False
     self.assertFalse(owner.apply(FeatureSettingsRequest(STARPORT_HEVC_KEY, b"1", "Off")))
+
+  def test_keyframe_test_defaults_off_and_follows_the_daemon(self):
+    service = FakeStarPort()
+    owner = DeveloperSettingsOwner(self.params, lambda: self.parked, starport=lambda: service)
+    rows = owner.snapshot().rows
+    keys = [row.key for row in rows]
+    self.assertEqual(keys.index(STARPORT_KEYFRAME_TEST_KEY), keys.index(STARPORT_HEVC_KEY) + 1)
+    row = rows[keys.index(STARPORT_KEYFRAME_TEST_KEY)]
+    self.assertEqual((row.value, row.default_value, row.available), ("Off", "Off", True))
+    self.assertTrue(owner.apply(FeatureSettingsRequest(STARPORT_KEYFRAME_TEST_KEY, row.source, "On")))
+    self.assertTrue(service.keyframe_test)
+    self.assertFalse(service.hevc)
+    self.assertFalse(owner.apply(FeatureSettingsRequest(STARPORT_KEYFRAME_TEST_KEY, row.source, "Off")))  # stale view
+    self.parked = False
+    self.assertFalse(owner.apply(FeatureSettingsRequest(STARPORT_KEYFRAME_TEST_KEY, b"1", "Off")))
+    self.assertNotIn(STARPORT_KEYFRAME_TEST_KEY, [row.key for row in DeveloperSettingsOwner(self.params, lambda: True).snapshot().rows])
+
+  def test_tall_hevc_defaults_off_and_follows_the_daemon(self):
+    service = FakeStarPort()
+    owner = DeveloperSettingsOwner(self.params, lambda: self.parked, starport=lambda: service)
+    rows = owner.snapshot().rows
+    keys = [row.key for row in rows]
+    self.assertEqual(keys.index(STARPORT_TALL_HEVC_KEY), keys.index(STARPORT_KEYFRAME_TEST_KEY) + 1)
+    row = rows[keys.index(STARPORT_TALL_HEVC_KEY)]
+    self.assertEqual((row.value, row.default_value, row.available), ("Off", "Off", True))
+    self.assertTrue(owner.apply(FeatureSettingsRequest(STARPORT_TALL_HEVC_KEY, row.source, "On")))
+    self.assertTrue(service.tall_hevc)
+    self.assertFalse(service.keyframe_test or service.hevc)
+    self.assertFalse(owner.apply(FeatureSettingsRequest(STARPORT_TALL_HEVC_KEY, row.source, "Off")))  # stale view
+
+  def test_unacked_video_defaults_off_and_follows_the_daemon(self):
+    service = FakeStarPort()
+    owner = DeveloperSettingsOwner(self.params, lambda: self.parked, starport=lambda: service)
+    rows = owner.snapshot().rows
+    keys = [row.key for row in rows]
+    row = rows[keys.index(STARPORT_UNACKED_VIDEO_KEY)]
+    self.assertEqual((row.value, row.default_value, row.available), ("Off", "Off", True))
+    self.assertTrue(owner.apply(FeatureSettingsRequest(STARPORT_UNACKED_VIDEO_KEY, row.source, "On")))
+    self.assertTrue(service.unacked_video)
+    self.assertFalse(service.hevc or service.tall_hevc or service.experiments)
+
+  def test_patient_connect_defaults_off_and_follows_the_daemon(self):
+    service = FakeStarPort()
+    owner = DeveloperSettingsOwner(self.params, lambda: self.parked, starport=lambda: service)
+    rows = owner.snapshot().rows
+    keys = [row.key for row in rows]
+    row = rows[keys.index(STARPORT_PATIENT_TCP_KEY)]
+    self.assertEqual((row.value, row.default_value, row.available), ("Off", "Off", True))
+    self.assertTrue(owner.apply(FeatureSettingsRequest(STARPORT_PATIENT_TCP_KEY, row.source, "On")))
+    self.assertTrue(service.patient_tcp)
+    self.assertFalse(service.unacked_video)
+
+  def test_try_experimental_fixes_defaults_off_and_is_the_only_master_switch(self):
+    service = FakeStarPort()
+    owner = DeveloperSettingsOwner(self.params, lambda: self.parked, starport=lambda: service)
+    rows = {row.key: row for row in owner.snapshot().rows}
+    self.assertEqual((rows[STARPORT_EXPERIMENTS_KEY].value, rows[STARPORT_EXPERIMENTS_KEY].default_value), ("Off", "Off"))
+    self.assertNotIn("StarPortHeadUnitFixes", rows)
+    self.assertTrue(owner.apply(FeatureSettingsRequest(STARPORT_EXPERIMENTS_KEY, b"0", "On")))
+    self.assertTrue(service.experiments)
+    self.assertFalse(owner.apply(FeatureSettingsRequest(STARPORT_EXPERIMENTS_KEY, b"0", "On")))  # stale view
+    self.assertTrue(owner.apply(FeatureSettingsRequest(STARPORT_EXPERIMENTS_KEY, b"1", "Off")))
+    self.assertFalse(service.experiments)
+
+  def test_experiment_toggles_appear_only_under_try_experimental_fixes(self):
+    service = FakeStarPort()
+    owner = DeveloperSettingsOwner(self.params, lambda: self.parked, starport=lambda: service)
+    keys = [row.key for row in owner.snapshot().rows]
+    self.assertIn(STARPORT_EXPERIMENTS_KEY, keys)
+    self.assertFalse([key for key in keys if key.startswith(STARPORT_EXPERIMENT_PREFIX)])
+    self.assertNotIn("heading:starport_experiments", keys)
+    self.assertTrue(owner.apply(FeatureSettingsRequest(STARPORT_EXPERIMENTS_KEY, b"0", "On")))
+    rows = owner.snapshot().rows
+    keys = [row.key for row in rows]
+    self.assertEqual(keys[keys.index(STARPORT_EXPERIMENTS_KEY) + 1:],
+                     [STARPORT_EXPERIMENT_PREFIX + "gm_mychevrolet_w28e", STARPORT_EXPERIMENT_PREFIX + "polestar_ps2_aar_301433653",
+                      STARPORT_EXPERIMENT_PREFIX + "phone_ping"])
+    rule_key = STARPORT_EXPERIMENT_PREFIX + "gm_mychevrolet_w28e"
+    row = rows[keys.index(rule_key)]
+    self.assertEqual((row.value, row.default_value, row.available), ("Off", "Off", True))
+    self.assertIn("shutdown", row.reason)
+    self.assertTrue(owner.apply(FeatureSettingsRequest(rule_key, row.source, "On")))
+    self.assertEqual(service.rules, ["gm_mychevrolet_w28e"])
+    self.assertFalse(owner.apply(FeatureSettingsRequest(rule_key, b"0", "On")))  # stale view
+    self.assertTrue(owner.apply(FeatureSettingsRequest(rule_key, b"1", "Off")))
+    self.assertEqual(service.rules, [])
+    mavlou = STARPORT_EXPERIMENT_PREFIX + "phone_ping"
+    self.assertEqual(rows[keys.index(mavlou)].value, "Off")
+    self.assertTrue(owner.apply(FeatureSettingsRequest(mavlou, b"0", "On")))
+    self.assertEqual(service.rules, ["phone_ping"])
+    self.assertTrue(owner.apply(FeatureSettingsRequest(mavlou, b"1", "Off")))
+    self.assertFalse(owner.apply(FeatureSettingsRequest(STARPORT_EXPERIMENT_PREFIX + "unknown", b"0", "On")))
+    self.parked = False
+    self.assertFalse(owner.apply(FeatureSettingsRequest(rule_key, b"0", "On")))
+    self.assertFalse(next(r for r in owner.snapshot().rows if r.key == rule_key).available)
+
+  def test_experiment_rows_are_hidden_when_the_service_is_off(self):
+    keys = [row.key for row in self.owner.snapshot().rows]
+    self.assertNotIn(STARPORT_EXPERIMENTS_KEY, keys)
+    self.assertNotIn(STARPORT_EXPERIMENTS_KEY, keys)
+
 
 class CalibrationResetSettingsTest(unittest.TestCase):
   setUp = DeveloperSettingsTest.setUp

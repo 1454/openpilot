@@ -277,6 +277,10 @@ struct StarPilotLongitudinalPlan @0xda96579883444c35 {
   modelMonoTime @2 :UInt64;
   driveStartMonoTime @3 :UInt64;
   forceStopHolding @4 :Bool;
+  forceStopBraking @5 :Bool;
+  forceStopEpisodeMonoTime @6 :UInt64;
+  departureAlertKind @7 :UInt8; # 0: none, 1: green-light advisory, 2: lead departing
+  departureAlertMonoTime @8 :UInt64; # Original advisory model-source timestamp, ns
 }
 
 struct SlcState @0xa1680744031fdb2d {
@@ -328,7 +332,7 @@ struct SlcState @0xa1680744031fdb2d {
   pendingSource @36 :Text;
   effectiveClusterTarget @37 :Float32; # m/s in the selected-cruise cluster coordinate
   hasEffectiveClusterTarget @38 :Bool;
-  isLimitingMaxSet @39 :Bool; # qualified raw ceiling below selected raw cruise
+  isLimitingMaxSet @39 :Bool; # adjusted limit at or below SET, in displayed units
   driverOverrideActive @40 :Bool;
   # Presentation only. Qualified source observations from this publisher cycle;
   # consumers use the outer session and frame freshness, never these rows for control.
@@ -339,7 +343,7 @@ struct SlcState @0xa1680744031fdb2d {
   hasPendingAdjustedLimit @45 :Bool;
   presentationAdjustedLimit @46 :Float32;
   hasPresentationAdjustedLimit @47 :Bool;
-  overrideBasis @48 :Text; # none/pedal/persistent; qualified contribution only
+  overrideBasis @48 :Text; # none/pedal/persistent/wheel; qualified contribution only
   retainedOverride @49 :Bool;
   commandActionSequenceId @50 :UInt64; # UI sequence that issued this command
   automaticAdoptionPending @51 :Bool;
@@ -352,6 +356,10 @@ struct SlcState @0xa1680744031fdb2d {
   # Qualified adoption proposal; the current displayed observation stays above.
   upcomingSpeedLimit @57 :Float32;
   upcomingBoundaryId @58 :Text;
+  acceptedIsPreview @59 :Bool; # a temporary ceiling, ineligible for initializing SET
+  wheelOverrideSince @60 :UInt64; # nonzero while a wheel tap may cross the current adjusted limit
+  wheelAdoptMonoTime @61 :UInt64; # Card's original wheel event timestamp, only on the approval frame
+  wheelAdoptTargetMps @62 :Float32; # exact adjusted SET approved for that event
   struct SourceReading {
     source @0 :Text;
     enabled @1 :Bool;
@@ -453,6 +461,7 @@ struct SlcAction @0x9ccdc8676701b412 {
   conditionalManual @5 :ConditionalManualAction;
   controllerCruise @6 :ControllerCruiseAction;
   controllerMode @7 :ControllerCruiseAction;
+  wheelAdoptMonoTime @8 :UInt64; # original timestamp of a qualified Adopt Speed Limit wheel event
 
   struct ControllerCruiseAction {
     version @0 :UInt16;
@@ -520,6 +529,7 @@ struct SlcCruiseEvent @0xcd96dafb67a082d0 {
   trafficMode @13 :TrafficModeGesture;
   wheelAction @14 :SlcAction.ControllerCruiseAction;
   teslaStockCruise @15 :TeslaStockCruise;
+  wheelOverrideSince @16 :UInt64; # SLC eligibility captured by a physical + tap; zero for ordinary SET changes
 
   struct TeslaStockCruise {
     version @0 :UInt16;
@@ -875,6 +885,16 @@ struct StarPilotLateralState @0xc2243c65e0340384 {
   learningApplication @10 :LearningApplication;
   feedbackConsumption @11 :FeedbackConsumption;
   trackingApplication @12 :LiveTrackingApplication;
+  torqueTuning @13 :TorqueTuning;
+
+  struct TorqueTuning {
+    version @0 :UInt16;
+    factor @1 :Float64;
+    friction @2 :Float64;
+    manualFactor @3 :Bool;
+    manualFriction @4 :Bool;
+    learned @5 :Bool;
+  }
 
   struct LaneCentering {
     version @0 :UInt16;
@@ -1571,3 +1591,4 @@ struct LiveTrackingResponseWitness @0xdaa1a9f0d8968e31 {
  windowStartMonoTime @4 :UInt64; independentPoses @5 :UInt16;
  residualRmse @6 :Float64; validUntilMonoTime @7 :UInt64;
 }
+

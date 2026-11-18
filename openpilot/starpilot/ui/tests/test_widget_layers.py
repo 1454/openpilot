@@ -112,6 +112,7 @@ def test_renderer_dispatches_each_widget_in_saved_order(profile, viewport):
   method = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == '_ordered_widgets')
   namespace: dict[str, Any] = {'CLOCK_WIDGET': CLOCK_WIDGET, 'MODE_WIDGET': MODE_WIDGET, 'placement': placement, 'widget_order': widget_order,
                              'RAIL_WIDGETS': RAIL_WIDGETS, 'STOPPED_TIMER_WIDGET': STOPPED_TIMER_WIDGET,
+                             'render_rear_fog': lambda *args: seen.append('rear_fog'),
                'manual_slc_confirmation': lambda profile, state: False, 'AlertSize': NS(NONE='none', FULL='full'), 'CameraViewChoice': NS(NONE='none'),
                'rl': NS(Rectangle=lambda x, y, width, height: NS(x=x, y=y, width=width, height=height))}
   exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), 'exec'), namespace)
@@ -123,6 +124,7 @@ def test_renderer_dispatches_each_widget_in_saved_order(profile, viewport):
   view.driver_monitor_layer = lambda *args: seen.append('driver_monitor')
   view._driving_mode = lambda *args: seen.append(MODE_WIDGET)
   view._clock = lambda *args: seen.append(CLOCK_WIDGET)
+  view._weather = lambda *args: seen.append('weather')
   view._stopped_timer = lambda *args: seen.append(STOPPED_TIMER_WIDGET)
   view._slc_actions = lambda *args: seen.append('speed_limit_actions')
   for attr, key in [('unified_speed', 'cruise_limits'), ('current_speed', 'current_speed'), ('cem_gauge', 'cem_gauge'),
@@ -141,9 +143,9 @@ def test_renderer_dispatches_each_widget_in_saved_order(profile, viewport):
     projection['widgetOrder'] = order
     document = projection_customization(projection, document)
     view.projection_exit_layer = lambda state: seen.append(CAR_EXIT)
+  view.navigation = NS(render=lambda *args: seen.append('nav_card'))
   if profile == 'large':
     view.map_layer = lambda *args: seen.append('nav_map')
-    view.navigation = NS(render=lambda *args: seen.append('nav_card'))
     view.navigation_favorites = NS(render=lambda key, state: seen.append(key))
     view.projection_exit_layer = lambda state: seen.append(CAR_EXIT)
     view.now_playing = NS(render=lambda state: seen.append('now_playing'))

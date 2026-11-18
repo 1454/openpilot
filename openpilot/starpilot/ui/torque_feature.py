@@ -37,7 +37,17 @@ class TorqueFeature:
     selection = selection_from_bytes(cp, self._raw(SELECTION_KEY))
     if selection.source == "invalid":
       raise ValueError("Saved controller selection unavailable")
-    return context(cp, selection.mode)
+    raw = self._raw(DOCUMENT_KEY)
+    profile = None if raw is None else parse_document(raw).get(str(cp.carFingerprint))
+    saved = None if profile is None else profile.manual_coordinates
+    return context(cp, selection.mode, recovered=bool(saved is not None and saved.route_format))
+
+  def _manual_compatible(self, saved):
+    if saved is None or not saved.compatibility:
+      return True
+    from openpilot.starpilot.flm.offroad_runtime import current_compatibility
+    from openpilot.starpilot.flm.runtime_adapter_registry import digest
+    return saved.compatibility == digest(current_compatibility(self.owner.vehicle_params(), self.params))
 
   def _manual_token(self):
     return json.dumps(self._manual_context(), separators=(",", ":")).encode()
@@ -55,22 +65,33 @@ class TorqueFeature:
       current = self._manual_context()
       saved = None if profile is None else profile.manual_coordinates
       matches = profile is None or (profile.basis == basis and profile.flm is None
-        and (saved is None or saved.context == current))
+        and (saved is None or saved.context == current) and self._manual_compatible(saved))
       values = dict(saved.values) if saved is not None else dict.fromkeys(NAMES, 0.)
       common = {"source": raw, "capability": capability, "related_source": token,
         "dependencies": self._dependents(SELECTION_KEY, *TORQUE_NUMBERS, "ForceAutoTuneOff")}
       reason = ("Parked only. Saved for the next drive; zero restores this stage's original baseline. " +
-                "Manual overrides pause Auto Learn and are not learned results.") if matches else (
+                "Only changed settings are locked; the other settings continue Auto Learn.") if matches else (
                 "Vehicle tune, controller or effect definition changed. Reset this manual tune before editing.")
       rows = []
       for name in NAMES:
         low, high = coordinate_bounds(name)
         rows.append(FeatureRow("torque:surface:" + name, name.replace("_", " ").capitalize(),
           f"{100 * values[name]:.4f}", step=.25, minimum=100 * low, maximum=100 * high, unit="%",
-          available=allowed and matches, reason=reason, default_value="0", **common))
+          available=allowed and matches,
+          reason='Accepted finding. Auto Learn remains enabled for this setting.' if saved is not None and name in (saved.automatic or ()) else reason,
+          accepted_finding_value=values[name] if saved is not None and name in (saved.automatic or ()) else None,
+          default_value="0", **common))
+      if saved is not None and saved.route_format:
+        from openpilot.starpilot.flm.offroad_surface import CURVE_NAMES
+        for name in CURVE_NAMES:
+          rows.append(FeatureRow('torque:surface:' + name, name.replace('_', ' ').capitalize(),
+            f'{100 * values[name]:.4f}', unit='%', available=False,
+            accepted_finding_value=values[name] if name in (saved.automatic or ()) else None,
+            reason=('Accepted finding. Auto Learn remains enabled for this setting.' if name in (saved.automatic or ()) else
+                    'This setting stays locked; other settings can learn.' if name in saved.locked else 'Auto Learn is enabled for this setting.'), **common))
       if saved is not None:
         rows.append(FeatureRow("torque:surface:reset", "Reset manual tune", "Reset", choices=("Reset",),
-          available=allowed, reason="Remove only the thirty manual overrides. Accepted Auto Learn history is preserved.", **common))
+          available=allowed, reason="Remove manual overrides, including any restored speed adjustments. Auto Learn history is preserved.", **common))
       return tuple(rows)
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError, UnicodeError):
       return (FeatureRow("", "Manual tune", "Unavailable", reason="Saved tuning or controller context is invalid; repair it in Toggles"),)
@@ -89,11 +110,12 @@ class TorqueFeature:
     current = self._manual_context()
     saved = prior.manual_coordinates
     if (name not in NAMES or prior.basis != basis or prior.flm is not None
-        or saved is not None and saved.context != current):
+        or saved is not None and (saved.context != current or not self._manual_compatible(saved))):
       raise ValueError("Manual tune context changed")
     values = dict(saved.values) if saved is not None else dict.fromkeys(NAMES, 0.)
     values[name] = float(request.value) / 100
-    manual = ManualCoordinates(current, tuple((n, values[n]) for n in NAMES)).validate()
+    automatic = None if saved is None or saved.automatic is None else tuple(n for n in saved.automatic if n != name)
+    manual = ManualCoordinates(current, tuple((n, values[n]) for n in values), '' if saved is None else saved.compatibility, automatic).validate()
     return {**profiles, fingerprint: replace(prior, manual_coordinates=manual if any(values.values()) else None)}
 
   def _factor_editable(self, fingerprint: str) -> bool:
@@ -243,12 +265,6 @@ class TorqueFeature:
     dependencies = self._dependents("ForceAutoTuneOff", SELECTION_KEY)
     selected = read_geometry(self.params, cp)
     rows = []
-    learning_labels = {"source": "Selected controller", "force_auto": "Force auto", "force_off": "Force off"}
-    rows.append(FeatureRow("torque:learning:value", "Automatic torque learning", learning_labels[geometry.learning], raw,
-                           choices=tuple(learning_labels.values()), available=allowed, capability=capability,
-                           related_source=token, dependencies=dependencies,
-                           reason="Chooses vehicle learning or a manual override. Force off takes priority; " +
-                                  "Force auto temporarily ignores saved factor, friction and ratio."))
     rows.append(FeatureRow("torque:automatic_delay:value", "Steering delay source", "Learned" if geometry.automatic_delay else "Vehicle/custom", raw,
                            choices=("Learned", "Vehicle/custom"), available=allowed, capability=capability,
                            related_source=token, dependencies=dependencies,

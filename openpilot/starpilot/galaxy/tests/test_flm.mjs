@@ -73,6 +73,14 @@ assert.doesNotMatch(readFileSync(new URL('../web/js/flm.js', import.meta.url), '
 for (const view of ['overview', 'tune', 'activity', 'plots']) assert(FlmPage.template.includes(`view === '${view}'`))
 const choice = { version: 1, valid: true, enabled: true, parked: true, vehicle: 'HYUNDAI_IONIQ_6' }
 assert(validLearningPreference(choice))
+for (const controller of [null, 'torque', 'pid', 'angle', 'curvature']) {
+  const preference = { ...choice, controller }
+  assert(validLearningPreference(preference))
+  assert.equal(FlmPage.computed.nonTorqueController.call({ choiceLive: true, preference }), ['pid', 'angle', 'curvature'].includes(controller))
+  assert.equal(FlmPage.computed.nonTorqueController.call({ choiceLive: false, preference }), false)
+}
+assert(!validLearningPreference({ ...choice, controller: 'unknown' }))
+assert.equal(FlmPage.computed.nonTorqueController.call({ choiceLive: true, preference: choice }), false)
 assert.equal(tunerStatus({ ...value, preference: choice }, false, true).key, 'parked')
 assert.equal(tunerStatus({ ...value, preference: { ...choice, enabled: false } }, true, true).key, 'off')
 assert.equal(tunerStatus({ ...value, preference: choice }, false, false).key, 'stale')
@@ -89,14 +97,14 @@ for (const invalid of [null, {}, { ...choice, version: true }, { ...choice, vali
 
 function instance() {
   const vm = { ...FlmPage.data(), activePage: true, mode: "local", unauthorized: () => vm.auth++, auth: 0,
-    poller: { stop() {} } }
+    poller: { stop() {} }, $nextTick: callback => Promise.resolve().then(callback) }
   for (const [name, method] of Object.entries(FlmPage.methods)) vm[name] = method.bind(vm)
   for (const [name, method] of Object.entries(FlmPage.computed)) Object.defineProperty(vm, name, { get: () => method.call(vm) })
   return vm
 }
 const originalFetch = globalThis.fetch, originalDocument = globalThis.document
 try {
-  globalThis.document = { hidden: false, addEventListener() {}, removeEventListener() {} }
+  globalThis.document = { getElementById: () => null, hidden: false, addEventListener() {}, removeEventListener() {} }
   const mounted = instance()
   mounted.load = () => {}
   FlmPage.mounted.call(mounted)
@@ -122,9 +130,9 @@ try {
   const focused = []
   const event = { key: 'ArrowRight', preventDefault() {}, currentTarget: { parentElement: { querySelectorAll: () =>
     ['overview', 'tune', 'activity', 'plots'].map(name => ({ focus: () => focused.push(name) })) } } }
-  vm.tabKey(event); assert.equal(vm.view, 'tune'); assert.deepEqual(focused, ['tune'])
-  event.key = 'End'; vm.tabKey(event); assert.equal(vm.view, 'plots')
-  event.key = 'Home'; vm.tabKey(event); assert.equal(vm.view, 'overview')
+  vm.tabKey(event); await Promise.resolve(); assert.equal(vm.view, 'tune'); assert.deepEqual(focused, ['tune'])
+  event.key = 'End'; vm.tabKey(event); await Promise.resolve(); assert.equal(vm.view, 'plots')
+  event.key = 'Home'; vm.tabKey(event); await Promise.resolve(); assert.equal(vm.view, 'overview')
   globalThis.fetch = async () => { throw new TypeError("offline") }
   await vm.load(); assert(!vm.currentApplied); assert.equal(vm.report, value)
   globalThis.fetch = async () => ({ ok: false, status: 401, json: async () => ({ error: "Sign in" }) })
@@ -140,6 +148,47 @@ try {
 console.log("Auto Learn canonical routing, exact full30 data, missing/stale application, auth and cancellation contracts passed")
 
 assert.doesNotMatch(FlmPage.template, /Steering settings|One change\. A fair comparison\.|Comparable driving windows establish/)
-assert.match(FlmPage.template, /Tuning and Analysis/)
+assert.match(FlmPage.template, /<h2>Your steering<\/h2>/)
 assert.match(FlmPage.template, /<PlotsPage[^>]+:active="view === 'plots'"[^>]+embedded/)
 assert.doesNotMatch(FlmPage.template, /gx-tuner__plots-link/)
+
+// An explicit acceptance uses its own endpoint; slider editing remains manual.
+const acceptanceContext = { mode: 'local', preference: { valid: true, enabled: true, parked: true, controller: 'torque' },
+  current: { fresh: true }, error: '', manualBusy: false }
+assert.equal(FlmPage.computed.canAcceptFindings.call(acceptanceContext), true)
+for (const change of [{ manualBusy: true }, { current: { fresh: false } }, { mode: 'remote' },
+  ...['parked', 'enabled', 'valid'].map(key => ({ preference: { ...acceptanceContext.preference, [key]: false } })),
+  { preference: { ...acceptanceContext.preference, controller: 'pid' } }])
+  assert.equal(FlmPage.computed.canAcceptFindings.call({ ...acceptanceContext, ...change }), false)
+const acceptanceFetch = globalThis.fetch
+try {
+  const idea = { parameter: 'ff_gain_left', target: .005 }
+  const vm = { ...FlmPage.data(), canAcceptFindings: true, review: { findings: [idea] },
+    current: { details: { 'Offroad assessment hash': 'a'.repeat(64) } },
+    manualFeed: { active: false }, parameterLabel: name => name, unauthorized: () => {} }
+  vm.reviewFinding = FlmPage.methods.reviewFinding.bind(vm)
+  vm.acceptFinding = FlmPage.methods.acceptFinding.bind(vm)
+  const calls = []
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options })
+    return { ok: true, json: async () => ({ status: 'saved', parameter: idea.parameter, value: idea.target, learning: 'automatic', for_next_drive: true }) }
+  }
+  vm.reviewFinding(idea)
+  assert.equal(calls.length, 0, 'Reviewing acceptance never writes')
+  await vm.acceptFinding()
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].url, './api/settings/flm-finding/accept')
+  assert.deepEqual(JSON.parse(calls[0].options.body), { parameter: idea.parameter, target: idea.target, assessment: 'a'.repeat(64) })
+  assert.equal(vm.findingDraft, null)
+  assert.match(vm.findingNotice, /Auto Learn stays on/)
+  vm.reviewFinding(idea)
+  globalThis.fetch = async () => { calls.push('failed');throw new TypeError('offline') }
+  await vm.acceptFinding()
+  assert.equal(calls.length, 2, 'An unknown write outcome is not retried automatically')
+  assert.equal(vm.findingNotice, '')
+  assert.match(vm.findingError, /Could not confirm/)
+  vm.canAcceptFindings = false
+  vm.reviewFinding(idea)
+  assert.equal(vm.findingDraft, null)
+} finally { globalThis.fetch = acceptanceFetch }
+console.log('Accept finding keeps learning enabled, requires parked authority, and preserves uncertain write outcomes')
