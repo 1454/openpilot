@@ -13,6 +13,7 @@ from opendbc.car.structs import car
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process, set_core_affinity
+from openpilot.common.transformations.orientation import rot_from_euler
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
 from openpilot.selfdrive.controls.lib.added_toggles import AddedToggles
@@ -309,6 +310,34 @@ class RadarD:
         frame.model_eof_boot_ns - frame.expected_boot_minus_mono_ns - frame.sample_skew_ns + MODEL_EOF_MAX_AGE_NS,
       )
 
+  @staticmethod
+  def _association_yaw_rate(sm, timestamp):
+    """Optional measured yaw for lead identity. A missing sample is not a radar fault."""
+    try:
+      names = ('deviceMotion', 'extrinsicsCalibration')
+      if not all(sm.seen.get(name, False) and sm.valid[name] for name in names):
+        return None
+      motion, calibration = (sm[name] for name in names)
+      angular = motion.angularVelocityDevice
+      values = tuple(float(v) for v in (angular.x, angular.y, angular.z))
+      stds = (angular.xStd, angular.yStd, angular.zStd)
+      rpy = tuple(float(v) for v in calibration.rpyCalib)
+      measured = motion.timestamp * 1e-9
+      published = sm.logMonoTime.get('deviceMotion', 0) * 1e-9
+      calibrated = sm.logMonoTime.get('extrinsicsCalibration', 0) * 1e-9
+      if not (all(math.isfinite(v) for v in (timestamp, measured, published, calibrated, *values, *rpy))
+              and len(rpy) == 3 and all(math.isfinite(v) and v >= 0. for v in stds)
+              and motion.inputsOK and motion.sensorsOK and motion.posenetOK and angular.valid
+              and str(calibration.calStatus) == 'calibrated'
+              and 0. <= measured <= timestamp and measured <= published <= timestamp + .1
+              and timestamp - measured <= .1 + 1e-6
+              and 0. <= calibrated <= measured and timestamp - calibrated <= 2. + 1e-6):
+        return None
+      yaw = float((rot_from_euler(rpy).T @ values)[2])
+      return yaw if math.isfinite(yaw) else None
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+      return None
+
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
 
@@ -387,10 +416,12 @@ class RadarD:
       if tracker_enabled or self.lead_pipeline.was_enabled:
         model = sm['modelV2']
         yaw_rate = float(model.orientationRate.z[0]) if len(model.orientationRate.z) else None
+        stamp = self.radar_state.mdMonoTime * 1e-9
         lead_one, lead_two = self.lead_pipeline.update(
-          leads_v3, [lead_one, lead_two], self.radar_state.mdMonoTime * 1e-9, self.v_ego, yaw_rate,
+          leads_v3, [lead_one, lead_two], stamp, self.v_ego, yaw_rate,
           self.radar_state_valid and self.ready, enabled=tracker_enabled,
-          future_enabled=toggles[FUTURE_KEY], responsive_enabled=toggles[RESPONSIVE_KEY])
+          future_enabled=toggles[FUTURE_KEY], responsive_enabled=toggles[RESPONSIVE_KEY],
+          association_yaw_rate=self._association_yaw_rate(sm, stamp))
       # The tracker already derives vision lead speed from distance; never stack both estimators.
       distance_velocity_enabled = self._distance_velocity_enabled and not tracker_enabled
       self.radar_state.leadOne = apply_distance_lead_velocity(
@@ -451,7 +482,9 @@ def main() -> None:
   cloudlog.info("radard got CarParams")
 
   # *** setup messaging
-  sm = messaging.SubMaster(['modelV2', 'carState', 'radarTracks'], poll='modelV2')
+  optional_motion = ['deviceMotion', 'extrinsicsCalibration']
+  sm = messaging.SubMaster(['modelV2', 'carState', 'radarTracks', *optional_motion], poll='modelV2',
+                           ignore_alive=optional_motion, ignore_avg_freq=optional_motion, ignore_valid=optional_motion)
   adjacent_enabled = feature_enabled(params, CP, 'conditional', os.environ) and 'REPLAY' not in os.environ
   pm = messaging.PubMaster(['radarState', 'starpilotRadarState'] if adjacent_enabled else ['radarState'])
 

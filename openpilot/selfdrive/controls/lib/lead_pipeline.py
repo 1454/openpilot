@@ -53,7 +53,7 @@ class LeadPipeline:
     self.was_enabled = self.was_future = self.was_responsive = False
 
   def update(self, model_leads, raw_leads, timestamp, v_ego, yaw_rate, valid, *,
-             enabled, future_enabled=False, responsive_enabled=False):
+             enabled, future_enabled=False, responsive_enabled=False, association_yaw_rate=None):
     """Return the two lead dictionaries to publish. `raw_leads` is never modified."""
     if not enabled or self.failed or len(model_leads) < 2 or len(raw_leads) != 2:
       if self.was_enabled:
@@ -62,13 +62,15 @@ class LeadPipeline:
     try:
       return self._update(model_leads, raw_leads, timestamp, v_ego, yaw_rate, valid,
                           future_enabled and not self.future_failed,
-                          responsive_enabled and not self.responsive_failed)
+                          responsive_enabled and not self.responsive_failed,
+                          association_yaw_rate)
     except Exception:
       cloudlog.exception("batmobile lead tracker disabled after failure")
       self.failed = True
       return raw_leads
 
-  def _update(self, model_leads, raw_leads, timestamp, v_ego, yaw_rate, valid, future_enabled, responsive_enabled):
+  def _update(self, model_leads, raw_leads, timestamp, v_ego, yaw_rate, valid, future_enabled, responsive_enabled,
+              association_yaw_rate):
     self.was_enabled = True
     # Every stage must see the same two slots, even when the model publishes more.
     model_leads = [model_leads[i] for i in range(2)]
@@ -78,10 +80,11 @@ class LeadPipeline:
                                                 _first(lead_msg.xStd), float(lead_msg.prob)))
       uncertainties.append(LeadUncertainty(float(lead_msg.prob), observations[-1].std,
                                            _first(lead_msg.vStd), _first(lead_msg.aStd)))
-    baseline = self.tracker.update(observations, raw_leads, timestamp, v_ego, valid, yaw_rate=yaw_rate)
+    baseline = self.tracker.update(observations, raw_leads, timestamp, v_ego, valid, yaw_rate=yaw_rate,
+                                   association_yaw_rate=association_yaw_rate)
     leads = self.confidence.update(raw_leads, baseline, uncertainties, self.tracker.slots, timestamp, v_ego, valid)
     leads = self.transition.update(observations, raw_leads, leads, [u.speed_std for u in uncertainties],
-                                   timestamp, v_ego, yaw_rate, valid)
+                                   timestamp, v_ego, yaw_rate, valid, tracks=self.tracker.slots)
 
     if future_enabled:
       try:
@@ -95,7 +98,8 @@ class LeadPipeline:
 
     if responsive_enabled:
       try:
-        leads = self.responsive.update(model_leads, observations, raw_leads, leads, timestamp, v_ego, yaw_rate, valid)
+        leads = self.responsive.update(model_leads, observations, raw_leads, leads, timestamp, v_ego, yaw_rate, valid,
+                                      tracks=self.tracker.slots)
       except Exception:
         # A failed stage must leave the already accepted lead output intact.
         cloudlog.exception("responsive lead stage disabled after failure")
@@ -118,7 +122,8 @@ class LeadPipeline:
         track = self.tracker.slots[i]
         future = self.future.status[i]
         cloudlog.info(" ".join((
-          f"lead-pre: slot={i} mode={track.mode if track else 'fallback'}",
+          f"lead-pre: slot={i} mode={track.mode if track else 'fallback'} id={track.track_id if track else 0}:{track.generation if track else 0}",
+          f"association={self.tracker.association_reasons[i]}",
           f"age={track.age if track else 0.0:.2f} ready={int(track.ready) if track else 0}",
           f"v={leads[i].get('vLead', 0.0):.2f} raw_v={raw_leads[i].get('vLead', 0.0):.2f}",
           f"confidence={self.confidence.status[i].reason}",

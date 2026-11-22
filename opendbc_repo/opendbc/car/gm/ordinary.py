@@ -14,7 +14,8 @@ from openpilot.selfdrive.controls.lib.gas_command import (
 
 
 def demands(accel, speed, orientation, cp, *, min_gas=-650, max_gas=2041, inactive_gas=-650, brake_threshold=-0.1, stop_speed=0.25, acc_tune=False,
-            truck_tuning=None, lead_visible=False, set_speed_error=0.0, stopping=False, gas_model=None):
+            truck_tuning=None, lead_visible=False, set_speed_error=0.0, stopping=False, gas_model=None,
+            friction_state=None):
   is_silverado = str(getattr(cp, "carFingerprint", "")) in ("CHEVROLET_SILVERADO", "CHEVROLET_SILVERADO_CC")
   stock_cd, stock_area = stock_drag_and_area(is_silverado, cp.wheelbase)
   stock_radius = 0.075 * cp.wheelbase + 0.1453
@@ -40,10 +41,12 @@ def demands(accel, speed, orientation, cp, *, min_gas=-650, max_gas=2041, inacti
   torque = radius * (mass * command + 0.5 * coeff_drag * frontal * air_density * speed ** 2)
   gas = int(round(np.clip(torque + 6150, min_gas + 6150, max_gas + 6150))) - 6150
   brake = int(round(np.interp(min(torque / (radius * mass), 0), [-4.0, brake_threshold], [400, 0])))
-  if truck_tuning is not None:
-    if truck_tuning.enabled:
-      brake, truck_tuning.friction_active = shape_truck_friction_brake(
-        brake, command, stopping, truck_tuning.friction_active)
-    else:
-      truck_tuning.friction_active = False
+  # Truck tuning owns the brake gate while it is on. Otherwise a Silverado
+  # friction holder keeps tiny requests off the pump so it does not chatter near a stop.
+  if truck_tuning is not None and not truck_tuning.enabled:
+    truck_tuning.friction_active = False
+  friction = truck_tuning if truck_tuning is not None and truck_tuning.enabled else friction_state
+  if friction is not None:
+    brake, friction.friction_active = shape_truck_friction_brake(
+      brake, command, stopping, friction.friction_active)
   return (inactive_gas if brake > 0 else gas), brake

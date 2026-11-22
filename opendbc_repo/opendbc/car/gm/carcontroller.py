@@ -366,6 +366,7 @@ class CarController(CarControllerBase):
     self.longitudinal_maneuver_mode = False
     self.ordinary_camera_long = (is_ordinary_camera_profile(self.CP, longitudinal=True) or
                                  self.camera_pedal_profile is not None and not self.camera_pedal_profile.volt and self.camera_pedal_profile.longitudinal)
+    self.silverado_friction = (TruckTuning() if self.CP.carFingerprint == CAR.CHEVROLET_SILVERADO and self.ordinary_camera_long else None)
     self.ordinary_camera_stock = is_ordinary_camera_profile(self.CP)
     self.ordinary_camera_removed = (is_ordinary_camera_removed(self.CP) or
                                     self.camera_pedal_profile is not None and self.camera_pedal_profile.removed)
@@ -1013,6 +1014,9 @@ class CarController(CarControllerBase):
           self.apply_brake = 0
           if self.truck_tuning is not None:
             self.truck_tuning.follow_accel = 0.0
+            self.truck_tuning.friction_active = False
+          if self.silverado_friction is not None:
+            self.silverado_friction.friction_active = False
         else:
           stop_brake = fixed_stopping_brake(CC.longActive, near_stop, stopping, CC.cruiseControl.resume,
                                            self.CP.stopAccel, self.params.MAX_BRAKE)
@@ -1021,6 +1025,9 @@ class CarController(CarControllerBase):
             self.apply_brake = stop_brake
             if self.truck_tuning is not None:
               self.truck_tuning.follow_accel = 0.0
+              self.truck_tuning.friction_active = True
+            if self.silverado_friction is not None:
+              self.silverado_friction.friction_active = True
           else:
             if self.CP.carFingerprint == CAR.CHEVROLET_SUBURBAN:
               self.apply_gas, self.apply_brake = suburban_gateway_demands(
@@ -1032,7 +1039,7 @@ class CarController(CarControllerBase):
                 min_gas=-540, max_gas=2698, inactive_gas=-500, brake_threshold=0.0, acc_tune=self.gm_acc_tune,
                 truck_tuning=self.truck_tuning, lead_visible=CC.hudControl.leadVisible,
                 set_speed_error=max(CC.hudControl.setSpeed - CS.out.vEgo, 0.0), stopping=stopping,
-                gas_model=self.gas_model)
+                gas_model=self.gas_model, friction_state=self.silverado_friction)
             elif self.ordinary_sdgm_long:
               self.apply_gas, self.apply_brake = ascm_demands(
                 actuators.accel, CS.out.vEgo, CC.orientationNED, self.CP,
