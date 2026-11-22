@@ -132,27 +132,18 @@ class AxisAlerts:
                    sm.valid['selfdriveState'] and sm.alive['selfdriveState'])
     lateral_known = intent is not None and (intent.pauseLateral or intent.lateralArmed or state_fresh)
     axis = current_axis(sm, now_ns=now_ns) if 'aolAxisState' in sm.logMonoTime else None
-    lateral = self.lateral.update(intent if lateral_known else None,
-                                  bool(intent and not intent.pauseLateral and
-                                       (intent.lateralArmed or (state_fresh and sm['selfdriveState'].active))), axis, now_ns)
-    longitudinal = self.longitudinal.update(
+    # Keep the episode clocks. They must not play engage or disengage.
+    # Cruise on and off still arrive as the alert from selfdriveState.
+    self.lateral.update(intent if lateral_known else None,
+                        bool(intent and not intent.pauseLateral and
+                             (intent.lateralArmed or (state_fresh and sm['selfdriveState'].active))), axis, now_ns)
+    self.longitudinal.update(
       intent.producerSessionId if intent is not None and state_fresh else None,
       intent.sequence if intent is not None else 0,
       bool(intent is not None and state_fresh and sm['selfdriveState'].enabled and not intent.pauseLongitudinal), now_ns)
-    extra_sound = (AudibleAlert.disengage if min(lateral, longitudinal) < 0 else
-                   AudibleAlert.engage if max(lateral, longitudinal) > 0 else AudibleAlert.none)
 
     native_sound = self.temporary_steering_sound(sm, intent, native_sound, now_ns, state_fresh)
-
-    if native_sound != AudibleAlert.none:
-      if native_sound != self.native_sound and native_sound in (AudibleAlert.engage, AudibleAlert.disengage):
-        self.last_sound, self.last_sound_at = native_sound, now_ns
-      self.native_sound = native_sound
-      return native_sound
-
+    if native_sound != self.native_sound and native_sound in (AudibleAlert.engage, AudibleAlert.disengage):
+      self.last_sound, self.last_sound_at = native_sound, now_ns
     self.native_sound = native_sound
-    if extra_sound != AudibleAlert.none:
-      if extra_sound == self.last_sound and now_ns - self.last_sound_at < COALESCE_NS:
-        return AudibleAlert.none
-      self.last_sound, self.last_sound_at = extra_sound, now_ns
-    return extra_sound
+    return native_sound
