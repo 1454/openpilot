@@ -45,7 +45,7 @@ def test_sierra_layout_finalizes_existing_cc_owner_and_preserves_stock_variant(r
   assert cp.flags == int(GMFlags.HAS_BSM | (0 if disabled else GMFlags.CC_LONG))
   assert (is_silverado_cc_stock_profile if disabled else is_ordinary_cc_profile)(cp) and qualified_gm(cp)
   assert cp.minSteerSpeed == pytest.approx(7 * .44704)
-  assert cp.minEnableSpeed == pytest.approx(-1. if disabled else 24 * .44704)
+  assert cp.minEnableSpeed == pytest.approx(-1.)
   if disabled:
     assert not cp.autoResumeSng
   old = silverado_stock_params()

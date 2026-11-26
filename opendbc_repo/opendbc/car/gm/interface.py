@@ -622,7 +622,7 @@ class CarInterface(CarInterfaceBase):
           ret.openpilotLongitudinalControl, ret.pcmCruise = True, False
           ret.flags |= int(GMFlags.CC_LONG)
           ret.safetyConfigs[0].safetyParam = ORDINARY_CC_WORD
-          ret.minEnableSpeed = 24 * CV.MPH_TO_MS
+          ret.minEnableSpeed = -1.
           ret.longitudinalActuatorDelay = 1.
           ret.longitudinalTuning.kiBP, ret.longitudinalTuning.kiV = [0.], [.1]
           ret.stopAccel = -2.
@@ -684,8 +684,8 @@ class CarInterface(CarInterfaceBase):
       ret.safetyConfigs[0].safetyParam = ((0xC173 if ret.openpilotLongitudinalControl else 0xC172) if camera_removed else
                                          (0xC170 if ret.openpilotLongitudinalControl else 0xC171))
       ret.minSteerSpeed = 10 * CV.KPH_TO_MS
-      ret.minEnableSpeed = (0. if candidate == CAR.CHEVROLET_SILVERADO and ret.openpilotLongitudinalControl else
-                            -1. if candidate in ALT_ACCS else 5 * CV.KPH_TO_MS)
+      ret.minEnableSpeed = (-1. if candidate == CAR.CHEVROLET_SILVERADO or candidate in ALT_ACCS else
+                            5 * CV.KPH_TO_MS)
       ret.longitudinalTuning.kiBP = [5., 35., 60.]
       ret.longitudinalTuning.kiV = [.5, .5, .5]
       ret.stopAccel = -.25
