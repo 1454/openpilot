@@ -9,24 +9,26 @@
 #include "msgq/visionipc/visionipc.h"
 #include "msgq/visionipc/visionipc_client.h"
 #include "msgq/visionipc/visionipc_server.h"
-#include "msgq/logger/logger.h"
 
 static int connect_to_vipc_server(const std::string &name, bool blocking) {
   const std::string ipc_path = get_ipc_path(name);
   int socket_fd = ipc_connect(ipc_path.c_str());
+  bool logged_retry = false;
   while (socket_fd < 0 && blocking) {
-    std::cout << "VisionIpcClient connecting" << std::endl;
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    if (!logged_retry) {
+      std::cout << "VisionIpcClient connecting" << std::endl;
+      logged_retry = true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
     socket_fd = ipc_connect(ipc_path.c_str());
   }
   return socket_fd;
 }
 
-VisionIpcClient::VisionIpcClient(std::string name, VisionStreamType type, bool conflate, cl_device_id device_id, cl_context ctx) : name(name), type(type), device_id(device_id), ctx(ctx) {
-  msg_ctx = Context::create();
-  sock = SubSocket::create(msg_ctx, get_endpoint_name(name, type), "127.0.0.1", conflate, false);
+VisionIpcClient::VisionIpcClient(std::string name_, VisionStreamType type_, bool conflate) : name(name_), type(type_) {
+  sock = SubSocket::create(get_endpoint_name(name, type), conflate);
 
-  poller = Poller::create();
+  poller = new Poller();
   poller->registerSocket(sock);
 }
 
@@ -37,7 +39,7 @@ bool VisionIpcClient::connect(bool blocking) {
   // Cleanup old buffers on reconnect
   for (size_t i = 0; i < num_buffers; i++) {
     if (buffers[i].free() != 0) {
-      LOGE("Failed to free buffer %zu", i);
+      std::cerr << "Failed to free buffer " << i << std::endl;
     }
   }
 
@@ -52,8 +54,8 @@ bool VisionIpcClient::connect(bool blocking) {
   assert(r == sizeof(type));
 
   // Get FDs
-  int fds[VISIONIPC_MAX_FDS];
-  VisionBuf bufs[VISIONIPC_MAX_FDS];
+  int fds[VISIONIPC_MAX_FDS] = {};
+  VisionBuf bufs[VISIONIPC_MAX_FDS] = {};
   r = ipc_sendrecv_with_fds(false, socket_fd, &bufs, sizeof(bufs), fds, VISIONIPC_MAX_FDS, &num_buffers);
   if (r < 0) {
     // only expected error is server shutting down
@@ -71,8 +73,6 @@ bool VisionIpcClient::connect(bool blocking) {
     buffers[i].fd = fds[i];
     buffers[i].import();
     buffers[i].init_yuv(buffers[i].width, buffers[i].height, buffers[i].stride, buffers[i].uv_offset);
-
-    if (device_id) buffers[i].init_cl(device_id, ctx);
   }
 
   close(socket_fd);
@@ -116,7 +116,7 @@ VisionBuf * VisionIpcClient::recv(VisionIpcBufExtra * extra, const int timeout_m
   }
 
   if (buf->sync(VISIONBUF_SYNC_TO_DEVICE) != 0) {
-    LOGE("Failed to sync buffer");
+    std::cerr << "Failed to sync buffer" << std::endl;
   }
 
   delete r;
@@ -128,12 +128,12 @@ std::set<VisionStreamType> VisionIpcClient::getAvailableStreams(const std::strin
   if (socket_fd < 0) {
     return {};
   }
-  // Send VISION_STREAM_MAX to server to request available streams
-  int request = VISION_STREAM_MAX;
+  // Send VISION_STREAM_LIST to server to request available streams
+  VisionStreamType request = VISION_STREAM_LIST;
   int r = ipc_sendrecv_with_fds(true, socket_fd, &request, sizeof(request), nullptr, 0, nullptr);
   assert(r == sizeof(request));
 
-  VisionStreamType available_streams[VISION_STREAM_MAX] = {};
+  VisionStreamType available_streams[VISIONIPC_MAX_STREAMS] = {};
   r = ipc_sendrecv_with_fds(false, socket_fd, &available_streams, sizeof(available_streams), nullptr, 0, nullptr);
   if (r < 0) {
     // only expected error is server shutting down
@@ -150,11 +150,10 @@ std::set<VisionStreamType> VisionIpcClient::getAvailableStreams(const std::strin
 VisionIpcClient::~VisionIpcClient() {
   for (size_t i = 0; i < num_buffers; i++) {
     if (buffers[i].free() != 0) {
-      LOGE("Failed to free buffer %zu", i);
+      std::cerr << "Failed to free buffer " << i << std::endl;
     }
   }
 
   delete sock;
   delete poller;
-  delete msg_ctx;
 }
